@@ -168,7 +168,7 @@ local function isLikelyVehicle(model)
     end
 
     local name = model.Name:lower()
-    local keywords = {"stryker", "vehicle", "m1126", "heli", "blackhawk", "truck", "car", "jeep", "tank", "btr", "boat", "plane", "uh-60", "ch-47", "mi-17"}
+    local keywords = {"stryker", "vehicle", "m1126", "heli", "blackhawk", "truck", "jeep", "tank", "btr", "boat", "plane", "uh-60", "ch-47", "mi-17"}
     for _, kw in ipairs(keywords) do
         if name:find(kw) then
             return true
@@ -201,6 +201,50 @@ local function isLikelyVehicle(model)
     return false
 end
 
+-- Vehicle names taken from the BRM5 ReplicatedStorage vehicle configs and the Unsorted dump
+local KNOWN_VEHICLES = {
+    "fmtv", "vab", "m998", "humvee", "lmtv", "jeep", "ural", "srtv", "pvp", "cougar", "stryker",
+    "brdm", "tigr", "vbmr", "mi8", "uh60", "ch47", "ch53", "mh60", "nh90", "md500",
+    "btr70", "t72", "bmp2_body", "bmp2_turret",
+}
+
+-- Props that live next to vehicles in Live.Unsorted and must never be listed
+local JUNK_NAMES = {
+    "wallight", "trilight", "overhead", "fence", "cabinet", "cone", "cart_", "hut", "tent",
+    "flagpole", "register", "umbrella", "sign", "light", "pole", "loader export", "barrel",
+}
+
+local function looksLikeGuid(name)
+    return name:match("^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$") ~= nil
+end
+
+-- Strict filter: only real vehicles pass
+local function isVehicleCandidate(model)
+    local n = model.Name:lower()
+
+    if looksLikeGuid(n) then
+        -- GUID stubs are also used for elevators/flags, which carry a Prefab attribute
+        if model:GetAttribute("Prefab") ~= nil then
+            return false
+        end
+        return true
+    end
+
+    for _, junk in ipairs(JUNK_NAMES) do
+        if n:find(junk, 1, true) then
+            return false
+        end
+    end
+
+    for _, known in ipairs(KNOWN_VEHICLES) do
+        if n:find(known, 1, true) then
+            return true
+        end
+    end
+
+    return isLikelyVehicle(model)
+end
+
 -- Scans the game and returns all available vehicles/models for the user to pick from
 function VehicleHealth:getAvailableVehicles()
     local list = {}
@@ -211,6 +255,9 @@ function VehicleHealth:getAvailableVehicles()
             return
         end
         if model.Name == "Male" or model:FindFirstChild("Male") or game.Players:GetPlayerFromCharacter(model) ~= nil then
+            return
+        end
+        if not isVehicleCandidate(model) then
             return
         end
         seen[model] = true
