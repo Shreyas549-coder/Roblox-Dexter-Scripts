@@ -171,6 +171,15 @@ local callbacks = {
         saveConfig()
     end,
 
+    onVehicleSelect = function(vehicle)
+        VehicleHealth:selectVehicle(vehicle)
+        GUI:updateVehicleStatus(VehicleHealth:getStatus())
+    end,
+
+    getAvailableVehicles = function()
+        return VehicleHealth:getAvailableVehicles()
+    end,
+
     onVisibleRChange = function(value)
         Config:updateVisibleColor(value, nil, nil)
         saveConfig()

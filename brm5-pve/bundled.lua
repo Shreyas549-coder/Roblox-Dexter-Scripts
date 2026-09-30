@@ -872,54 +872,103 @@ local function isLikelyVehicle(model)
     return false
 end
 
--- Dedicated finder for the single Stryker in the server
-local function findStrykerInGame()
-    -- 1. Direct search for Stryker / M1126 model
-    for _, desc in ipairs(workspace:GetDescendants()) do
-        if desc:IsA("Model") and desc.Name ~= "Male" and game.Players:GetPlayerFromCharacter(desc) == nil then
-            local n = desc.Name:lower()
-            if n:find("stryker") or n:find("m1126") or n:find("icv") then
-                return desc
-            end
+-- Scans the game and returns all available vehicles/models for the user to pick from
+function VehicleHealth:getAvailableVehicles()
+    local list = {}
+    local seen = {}
+
+    local function addCandidate(model, tag)
+        if not model or not model:IsA("Model") or seen[model] then
+            return
         end
+        if model.Name == "Male" or game.Players:GetPlayerFromCharacter(model) ~= nil then
+            return
+        end
+        seen[model] = true
+        table.insert(list, {
+            instance = model,
+            name = model.Name .. (tag and (" [" .. tag .. "]") or "")
+        })
     end
 
-    -- 2. Search for any part/mesh/folder named with stryker or m1126
-    for _, desc in ipairs(workspace:GetDescendants()) do
-        if desc:IsA("BasePart") or desc:IsA("Folder") or desc:IsA("Configuration") then
-            local n = desc.Name:lower()
-            if n:find("stryker") or n:find("m1126") then
-                local veh = findVehicleRoot(desc)
-                if veh then
-                    return veh
+    local searchFolders = {
+        workspace:FindFirstChild("Live"),
+        workspace:FindFirstChild("Vehicles"),
+        workspace
+    }
+
+    -- 1. Models with vehicle keywords (Stryker, M1126, Heli, etc.)
+    for _, folder in ipairs(searchFolders) do
+        if folder then
+            for _, obj in ipairs(folder:GetChildren()) do
+                if obj:IsA("Model") and isLikelyVehicle(obj) then
+                    addCandidate(obj, "Vehicle")
                 end
             end
         end
     end
 
-    -- 3. Search for any vehicle model with a VehicleSeat or DriveSeat
-    local searchContainers = {workspace:FindFirstChild("Live"), workspace:FindFirstChild("Vehicles"), workspace}
-    for _, container in ipairs(searchContainers) do
-        if container then
-            for _, obj in ipairs(container:GetChildren()) do
-                if obj:IsA("Model") and obj.Name ~= "Male" and game.Players:GetPlayerFromCharacter(obj) == nil then
-                    if obj:FindFirstChildOfClass("VehicleSeat") or obj:FindFirstChild("DriveSeat") or obj:FindFirstChild("Chassis") then
-                        return obj
+    -- 2. Models containing a VehicleSeat or Seat
+    for _, folder in ipairs(searchFolders) do
+        if folder then
+            for _, obj in ipairs(folder:GetChildren()) do
+                if obj:IsA("Model") and not seen[obj] then
+                    local seat = obj:FindFirstChildOfClass("VehicleSeat") or obj:FindFirstChildOfClass("Seat")
+                    if seat then
+                        addCandidate(obj, "Seat: " .. seat.Name)
                     end
                 end
             end
         end
     end
 
-    return nil
+    -- 3. Any descendant Model matching Stryker/Vehicle
+    for _, desc in ipairs(workspace:GetDescendants()) do
+        if desc:IsA("Model") and not seen[desc] then
+            local n = desc.Name:lower()
+            if n:find("stryker") or n:find("m1126") or n:find("vehicle") or n:find("heli") or n:find("truck") then
+                addCandidate(desc, "Keyword")
+            end
+        end
+    end
+
+    -- 4. Any other non-character models in Live folder
+    local live = workspace:FindFirstChild("Live")
+    if live then
+        for _, obj in ipairs(live:GetChildren()) do
+            if obj:IsA("Model") and not seen[obj] and obj.Name ~= "Male" then
+                addCandidate(obj, "Live Model")
+            end
+        end
+    end
+
+    return list
+end
+
+-- Allows manual vehicle selection from GUI dropdown/list
+function VehicleHealth:selectVehicle(vehicle)
+    if not vehicle or not vehicle.Parent then
+        return false
+    end
+
+    self.selectedVehicle = vehicle
+    self.currentVehicle = vehicle
+    self.vehicleName = vehicle.Name
+    self:bindHealthObjects(vehicle)
+
+    if self.enabled then
+        self:heal()
+    end
+
+    self.lastStatus = self.vehicleName .. " (Selected)"
+    return true
 end
 
 -- Attempts to find the vehicle model the player is in through multiple detection methods
 local function getPlayerVehicle(localPlayer)
-    -- Priority: Lock directly onto the server's Stryker
-    local serverStryker = findStrykerInGame()
-    if serverStryker then
-        return serverStryker
+    -- If user manually picked a vehicle from the list, use that
+    if VehicleHealth.selectedVehicle and VehicleHealth.selectedVehicle.Parent then
+        return VehicleHealth.selectedVehicle
     end
 
     local camera = workspace.CurrentCamera
@@ -1668,16 +1717,109 @@ function GUI:init(services, config, callbacks)
     vehicleStatusLabel.Size = UDim2.new(1, -10, 0, 35)
     vehicleStatusLabel.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
     vehicleStatusLabel.Text = "Status: Disabled"
-    vehicleStatusLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
-    vehicleStatusLabel.Font = "Gotham"
+    vehicleStatusLabel.TextColor3 = Color3.fromRGB(85, 170, 255)
+    vehicleStatusLabel.Font = "GothamBold"
     vehicleStatusLabel.TextSize = 12
     vehicleStatusLabel.TextWrapped = true
     Instance.new("UICorner", vehicleStatusLabel).CornerRadius = UDim.new(0, 6)
     self.vehicleStatusLabel = vehicleStatusLabel
 
+    createLabel(tabVehicle, "-- SELECT VEHICLE --", Color3.fromRGB(200, 200, 200))
+
+    local vehicleListContainer = Instance.new("Frame", tabVehicle)
+    vehicleListContainer.Size = UDim2.new(1, -10, 0, 130)
+    vehicleListContainer.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    vehicleListContainer.BorderSizePixel = 0
+    Instance.new("UICorner", vehicleListContainer).CornerRadius = UDim.new(0, 6)
+
+    local vehicleScroll = Instance.new("ScrollingFrame", vehicleListContainer)
+    vehicleScroll.Size = UDim2.new(1, -8, 1, -8)
+    vehicleScroll.Position = UDim2.new(0, 4, 0, 4)
+    vehicleScroll.BackgroundTransparency = 1
+    vehicleScroll.ScrollBarThickness = 3
+    vehicleScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    vehicleScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+
+    local vLayout = Instance.new("UIListLayout", vehicleScroll)
+    vLayout.Padding = UDim.new(0, 4)
+    vLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    vLayout.SortOrder = Enum.SortOrder.LayoutOrder
+
+    local vehicleButtons = {}
+    local selectedVehicleModel = nil
+
+    local function populateVehicleList()
+        for _, btn in pairs(vehicleButtons) do
+            pcall(function() btn:Destroy() end)
+        end
+        vehicleButtons = {}
+
+        local vehicles = callbacks.getAvailableVehicles and callbacks.getAvailableVehicles() or {}
+        if #vehicles == 0 then
+            local emptyLabel = Instance.new("TextLabel", vehicleScroll)
+            emptyLabel.Size = UDim2.new(1, -10, 0, 30)
+            emptyLabel.Text = "No vehicles found. Click Refresh."
+            emptyLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+            emptyLabel.Font = "Gotham"
+            emptyLabel.TextSize = 11
+            emptyLabel.BackgroundTransparency = 1
+            table.insert(vehicleButtons, emptyLabel)
+            return
+        end
+
+        for _, vehData in ipairs(vehicles) do
+            local vBtn = Instance.new("TextButton", vehicleScroll)
+            vBtn.Size = UDim2.new(1, -6, 0, 28)
+            local isSel = (selectedVehicleModel == vehData.instance)
+            vBtn.BackgroundColor3 = isSel and Color3.fromRGB(85, 170, 255) or Color3.fromRGB(35, 35, 35)
+            vBtn.TextColor3 = isSel and Color3.new(0, 0, 0) or Color3.new(1, 1, 1)
+            vBtn.Font = "GothamMedium"
+            vBtn.TextSize = 11
+            vBtn.Text = "🚙 " .. vehData.name
+            vBtn.TextXAlignment = Enum.TextXAlignment.Left
+            Instance.new("UICorner", vBtn).CornerRadius = UDim.new(0, 4)
+
+            local pad = Instance.new("UIPadding", vBtn)
+            pad.PaddingLeft = UDim.new(0, 8)
+
+            vBtn.MouseButton1Click:Connect(function()
+                selectedVehicleModel = vehData.instance
+                for _, b in pairs(vehicleButtons) do
+                    if b:IsA("TextButton") then
+                        b.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+                        b.TextColor3 = Color3.new(1, 1, 1)
+                    end
+                end
+                vBtn.BackgroundColor3 = Color3.fromRGB(85, 170, 255)
+                vBtn.TextColor3 = Color3.new(0, 0, 0)
+
+                if callbacks.onVehicleSelect then
+                    callbacks.onVehicleSelect(vehData.instance)
+                end
+            end)
+
+            table.insert(vehicleButtons, vBtn)
+        end
+    end
+
+    local refreshBtn = Instance.new("TextButton", tabVehicle)
+    refreshBtn.Size = UDim2.new(1, -10, 0, 30)
+    refreshBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+    refreshBtn.Text = "🔄 Refresh Vehicle List"
+    refreshBtn.TextColor3 = Color3.fromRGB(220, 220, 220)
+    refreshBtn.Font = "GothamBold"
+    refreshBtn.TextSize = 12
+    Instance.new("UICorner", refreshBtn).CornerRadius = UDim.new(0, 6)
+
+    refreshBtn.MouseButton1Click:Connect(function()
+        populateVehicleList()
+    end)
+
+    task.delay(1, populateVehicleList)
+
     createInfoLabel(
         tabVehicle,
-        "When enabled, the script will detect the vehicle you're sitting in and continuously set its health to max, preventing it from being destroyed. Get into a vehicle first, then enable this."
+        "Select your vehicle from the list above and toggle Vehicle God Mode to lock its health to maximum. If your vehicle was spawned after loading, click 'Refresh Vehicle List'."
     )
 
     -- COLORS TAB
@@ -1947,6 +2089,15 @@ local callbacks = {
             VehicleHealth:cleanup()
         end
         saveConfig()
+    end,
+
+    onVehicleSelect = function(vehicle)
+        VehicleHealth:selectVehicle(vehicle)
+        GUI:updateVehicleStatus(VehicleHealth:getStatus())
+    end,
+
+    getAvailableVehicles = function()
+        return VehicleHealth:getAvailableVehicles()
     end,
 
     onVisibleRChange = function(value)

@@ -146,54 +146,103 @@ local function isLikelyVehicle(model)
     return false
 end
 
--- Dedicated finder for the single Stryker in the server
-local function findStrykerInGame()
-    -- 1. Direct search for Stryker / M1126 model
-    for _, desc in ipairs(workspace:GetDescendants()) do
-        if desc:IsA("Model") and desc.Name ~= "Male" and game.Players:GetPlayerFromCharacter(desc) == nil then
-            local n = desc.Name:lower()
-            if n:find("stryker") or n:find("m1126") or n:find("icv") then
-                return desc
-            end
+-- Scans the game and returns all available vehicles/models for the user to pick from
+function VehicleHealth:getAvailableVehicles()
+    local list = {}
+    local seen = {}
+
+    local function addCandidate(model, tag)
+        if not model or not model:IsA("Model") or seen[model] then
+            return
         end
+        if model.Name == "Male" or game.Players:GetPlayerFromCharacter(model) ~= nil then
+            return
+        end
+        seen[model] = true
+        table.insert(list, {
+            instance = model,
+            name = model.Name .. (tag and (" [" .. tag .. "]") or "")
+        })
     end
 
-    -- 2. Search for any part/mesh/folder named with stryker or m1126
-    for _, desc in ipairs(workspace:GetDescendants()) do
-        if desc:IsA("BasePart") or desc:IsA("Folder") or desc:IsA("Configuration") then
-            local n = desc.Name:lower()
-            if n:find("stryker") or n:find("m1126") then
-                local veh = findVehicleRoot(desc)
-                if veh then
-                    return veh
+    local searchFolders = {
+        workspace:FindFirstChild("Live"),
+        workspace:FindFirstChild("Vehicles"),
+        workspace
+    }
+
+    -- 1. Models with vehicle keywords (Stryker, M1126, Heli, etc.)
+    for _, folder in ipairs(searchFolders) do
+        if folder then
+            for _, obj in ipairs(folder:GetChildren()) do
+                if obj:IsA("Model") and isLikelyVehicle(obj) then
+                    addCandidate(obj, "Vehicle")
                 end
             end
         end
     end
 
-    -- 3. Search for any vehicle model with a VehicleSeat or DriveSeat
-    local searchContainers = {workspace:FindFirstChild("Live"), workspace:FindFirstChild("Vehicles"), workspace}
-    for _, container in ipairs(searchContainers) do
-        if container then
-            for _, obj in ipairs(container:GetChildren()) do
-                if obj:IsA("Model") and obj.Name ~= "Male" and game.Players:GetPlayerFromCharacter(obj) == nil then
-                    if obj:FindFirstChildOfClass("VehicleSeat") or obj:FindFirstChild("DriveSeat") or obj:FindFirstChild("Chassis") then
-                        return obj
+    -- 2. Models containing a VehicleSeat or Seat
+    for _, folder in ipairs(searchFolders) do
+        if folder then
+            for _, obj in ipairs(folder:GetChildren()) do
+                if obj:IsA("Model") and not seen[obj] then
+                    local seat = obj:FindFirstChildOfClass("VehicleSeat") or obj:FindFirstChildOfClass("Seat")
+                    if seat then
+                        addCandidate(obj, "Seat: " .. seat.Name)
                     end
                 end
             end
         end
     end
 
-    return nil
+    -- 3. Any descendant Model matching Stryker/Vehicle
+    for _, desc in ipairs(workspace:GetDescendants()) do
+        if desc:IsA("Model") and not seen[desc] then
+            local n = desc.Name:lower()
+            if n:find("stryker") or n:find("m1126") or n:find("vehicle") or n:find("heli") or n:find("truck") then
+                addCandidate(desc, "Keyword")
+            end
+        end
+    end
+
+    -- 4. Any other non-character models in Live folder
+    local live = workspace:FindFirstChild("Live")
+    if live then
+        for _, obj in ipairs(live:GetChildren()) do
+            if obj:IsA("Model") and not seen[obj] and obj.Name ~= "Male" then
+                addCandidate(obj, "Live Model")
+            end
+        end
+    end
+
+    return list
+end
+
+-- Allows manual vehicle selection from GUI dropdown/list
+function VehicleHealth:selectVehicle(vehicle)
+    if not vehicle or not vehicle.Parent then
+        return false
+    end
+
+    self.selectedVehicle = vehicle
+    self.currentVehicle = vehicle
+    self.vehicleName = vehicle.Name
+    self:bindHealthObjects(vehicle)
+
+    if self.enabled then
+        self:heal()
+    end
+
+    self.lastStatus = self.vehicleName .. " (Selected)"
+    return true
 end
 
 -- Attempts to find the vehicle model the player is in through multiple detection methods
 local function getPlayerVehicle(localPlayer)
-    -- Priority: Lock directly onto the server's Stryker
-    local serverStryker = findStrykerInGame()
-    if serverStryker then
-        return serverStryker
+    -- If user manually picked a vehicle from the list, use that
+    if VehicleHealth.selectedVehicle and VehicleHealth.selectedVehicle.Parent then
+        return VehicleHealth.selectedVehicle
     end
 
     local camera = workspace.CurrentCamera
