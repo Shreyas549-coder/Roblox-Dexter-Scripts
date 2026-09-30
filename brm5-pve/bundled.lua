@@ -872,8 +872,56 @@ local function isLikelyVehicle(model)
     return false
 end
 
+-- Dedicated finder for the single Stryker in the server
+local function findStrykerInGame()
+    -- 1. Direct search for Stryker / M1126 model
+    for _, desc in ipairs(workspace:GetDescendants()) do
+        if desc:IsA("Model") and desc.Name ~= "Male" and game.Players:GetPlayerFromCharacter(desc) == nil then
+            local n = desc.Name:lower()
+            if n:find("stryker") or n:find("m1126") or n:find("icv") then
+                return desc
+            end
+        end
+    end
+
+    -- 2. Search for any part/mesh/folder named with stryker or m1126
+    for _, desc in ipairs(workspace:GetDescendants()) do
+        if desc:IsA("BasePart") or desc:IsA("Folder") or desc:IsA("Configuration") then
+            local n = desc.Name:lower()
+            if n:find("stryker") or n:find("m1126") then
+                local veh = findVehicleRoot(desc)
+                if veh then
+                    return veh
+                end
+            end
+        end
+    end
+
+    -- 3. Search for any vehicle model with a VehicleSeat or DriveSeat
+    local searchContainers = {workspace:FindFirstChild("Live"), workspace:FindFirstChild("Vehicles"), workspace}
+    for _, container in ipairs(searchContainers) do
+        if container then
+            for _, obj in ipairs(container:GetChildren()) do
+                if obj:IsA("Model") and obj.Name ~= "Male" and game.Players:GetPlayerFromCharacter(obj) == nil then
+                    if obj:FindFirstChildOfClass("VehicleSeat") or obj:FindFirstChild("DriveSeat") or obj:FindFirstChild("Chassis") then
+                        return obj
+                    end
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
 -- Attempts to find the vehicle model the player is in through multiple detection methods
 local function getPlayerVehicle(localPlayer)
+    -- Priority: Lock directly onto the server's Stryker
+    local serverStryker = findStrykerInGame()
+    if serverStryker then
+        return serverStryker
+    end
+
     local camera = workspace.CurrentCamera
 
     -- Method 0: Check Camera.CameraSubject (most reliable in Roblox vehicles)
