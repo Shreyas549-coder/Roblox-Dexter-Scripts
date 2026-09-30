@@ -1,108 +1,73 @@
--- BRM5 Vehicle & Config Inspector
-local output = {}
-local function log(str)
-    table.insert(output, str)
-    print(str)
+-- BRM5 Vehicle Name Dumper (Bulletproof)
+-- Run once with Jeep, once with Stryker.
+-- Copies the exact list to your clipboard automatically!
+
+local lines = {}
+local function add(text)
+    table.insert(lines, text)
+    print(text)
 end
 
-log("=== BRM5 LIVE VEHICLES & CONFIGS ===")
+add("=== BRM5 VEHICLE DUMP START ===")
 
--- 1. Scan Workspace.Live.Unsorted and Workspace.Live.Tech
-local live = workspace:FindFirstChild("Live")
-if live then
-    local unsorted = live:FindFirstChild("Unsorted")
-    if unsorted then
-        log("\n[1] ALL CHILDREN IN Workspace.Live.Unsorted:")
-        for _, child in ipairs(unsorted:GetChildren()) do
-            local line = "  [" .. child.ClassName .. "] " .. child.Name
-            log(line)
-            -- If it has children or attributes
-            for aName, aVal in pairs(child:GetAttributes()) do
-                log("     Attr: " .. aName .. " = " .. tostring(aVal))
-            end
-            for _, sub in ipairs(child:GetChildren()) do
-                if sub:IsA("ValueBase") or sub.Name:lower():find("health") or sub.Name:lower():find("hull") or sub.Name:lower():find("chassis") or sub.Name:lower():find("main") or sub.Name:lower():find("seat") then
-                    log("     -> [" .. sub.ClassName .. "] " .. sub.Name .. (sub:IsA("ValueBase") and (" = " .. tostring(sub.Value)) or ""))
-                end
-            end
-        end
-    end
-
-    local tech = live:FindFirstChild("Tech")
-    if tech then
-        log("\n[2] ALL CHILDREN IN Workspace.Live.Tech:")
-        for _, child in ipairs(tech:GetChildren()) do
-            log("  [" .. child.ClassName .. "] " .. child.Name)
-            for aName, aVal in pairs(child:GetAttributes()) do
-                log("     Attr: " .. aName .. " = " .. tostring(aVal))
-            end
-            for _, sub in ipairs(child:GetChildren()) do
-                if sub:IsA("ValueBase") or sub.Name:lower():find("health") or sub.Name:lower():find("seat") then
-                    log("     -> [" .. sub.ClassName .. "] " .. sub.Name)
-                end
-            end
-        end
-    end
-end
-
--- 2. Inspect ReplicatedStorage.Shared.Configs.Vehicle
-log("\n[3] REPLICATEDSTORAGE VEHICLE CONFIGS:")
-local rep = game:GetService("ReplicatedStorage")
-local shared = rep:FindFirstChild("Shared")
-if shared then
-    local configs = shared:FindFirstChild("Configs")
-    if configs then
-        local vehConfig = configs:FindFirstChild("Vehicle")
-        if vehConfig then
-            log("Vehicle Config Class: " .. vehConfig.ClassName)
-            if vehConfig:IsA("ModuleScript") then
-                local ok, data = pcall(require, vehConfig)
-                if ok and type(data) == "table" then
-                    log("Vehicle Config keys:")
-                    for k, v in pairs(data) do
-                        log("  " .. tostring(k) .. " = " .. type(v))
-                        if type(v) == "table" then
-                            for subK, subV in pairs(v) do
-                                log("     " .. tostring(subK) .. " = " .. tostring(subV))
-                            end
-                        end
-                    end
-                end
-            else
-                for _, child in ipairs(vehConfig:GetChildren()) do
-                    log("  [" .. child.ClassName .. "] " .. child.Name)
-                    if child:IsA("ModuleScript") then
-                        local ok, data = pcall(require, child)
-                        if ok and type(data) == "table" then
-                            for k, v in pairs(data) do
-                                log("     " .. tostring(k) .. " = " .. tostring(v))
-                            end
-                        end
-                    end
+-- 1. Scan Workspace.Live.Unsorted
+local ok1, err1 = pcall(function()
+    local live = workspace:FindFirstChild("Live")
+    if live then
+        local unsorted = live:FindFirstChild("Unsorted")
+        if unsorted then
+            add("\n--- Live.Unsorted Models ---")
+            for _, child in ipairs(unsorted:GetChildren()) do
+                if child:IsA("Model") and child.Name ~= "Male" then
+                    add(child.Name)
                 end
             end
         else
-            log("shared.Configs.Vehicle not found")
+            add("Live.Unsorted not found")
+        end
+    else
+        add("workspace.Live not found")
+    end
+end)
+if not ok1 then add("Error scanning Unsorted: " .. tostring(err1)) end
+
+-- 2. Scan Workspace.Live.Tech
+local ok2, err2 = pcall(function()
+    local live = workspace:FindFirstChild("Live")
+    if live then
+        local tech = live:FindFirstChild("Tech")
+        if tech then
+            add("\n--- Live.Tech Models ---")
+            for _, child in ipairs(tech:GetChildren()) do
+                if child:IsA("Model") and child.Name ~= "Male" then
+                    add(child.Name)
+                end
+            end
         end
     end
-end
+end)
+if not ok2 then add("Error scanning Tech: " .. tostring(err2)) end
 
--- 3. Check VehicleSolver
-local vehFolder = shared and shared:FindFirstChild("Vehicle")
-if vehFolder then
-    log("\n[4] VEHICLE SOLVER FOLDER:")
-    for _, child in ipairs(vehFolder:GetChildren()) do
-        log("  [" .. child.ClassName .. "] " .. child.Name)
+-- 3. Scan top-level Workspace Models
+local ok3, err3 = pcall(function()
+    add("\n--- Workspace Top-Level Models ---")
+    for _, child in ipairs(workspace:GetChildren()) do
+        if child:IsA("Model") and child.Name ~= "Male" and child.Name ~= "Terrain" then
+            add(child.Name)
+        end
     end
-end
+end)
+if not ok3 then add("Error scanning Workspace: " .. tostring(err3)) end
 
-log("\n=== END ===")
+add("\n=== BRM5 VEHICLE DUMP END ===")
 
-local result = table.concat(output, "\n")
-if typeof(setclipboard) == "function" then
-    pcall(setclipboard, result)
-    print("\n[SUCCESS] Automatically copied to clipboard! Just Ctrl+V here.")
-elseif typeof(toclipboard) == "function" then
-    pcall(toclipboard, result)
-    print("\n[SUCCESS] Automatically copied to clipboard! Just Ctrl+V here.")
-end
+local result = table.concat(lines, "\n")
+pcall(function()
+    if typeof(setclipboard) == "function" then
+        setclipboard(result)
+    elseif typeof(toclipboard) == "function" then
+        toclipboard(result)
+    end
+end)
+
+print("\n>>> [COPIED TO CLIPBOARD] Press Ctrl+V in chat! <<<")
