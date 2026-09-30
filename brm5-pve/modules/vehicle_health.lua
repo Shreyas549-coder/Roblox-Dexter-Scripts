@@ -391,13 +391,19 @@ function VehicleHealth:getAvailableVehicles()
         end
     end
 
-    local searchFolders = {
-        unsorted,
-        tech,
-        live,
-        workspace:FindFirstChild("Vehicles"),
-        workspace
-    }
+    -- NOTE: ipairs stops at the first nil, and Workspace.Vehicles doesn't exist in BRM5,
+    -- so build the list without nil holes or `workspace` itself is never scanned.
+    local searchFolders = {}
+    local function addFolder(f)
+        if f then
+            table.insert(searchFolders, f)
+        end
+    end
+    addFolder(unsorted)
+    addFolder(tech)
+    addFolder(live)
+    addFolder(workspace:FindFirstChild("Vehicles"))
+    addFolder(workspace)
 
     -- 2. Models that look like vehicles (keywords, seats, or the structural signature).
     -- Spawned BRM5 vehicles are direct children of Workspace, so the `workspace` entry above catches them.
