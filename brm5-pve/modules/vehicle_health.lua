@@ -151,7 +151,7 @@ function VehicleHealth:getAvailableVehicles()
     local list = {}
     local seen = {}
 
-    local function addCandidate(model, tag)
+    local function addCandidate(model, defaultTag)
         if not model or not model:IsA("Model") or seen[model] then
             return
         end
@@ -159,9 +159,27 @@ function VehicleHealth:getAvailableVehicles()
             return
         end
         seen[model] = true
+
+        local n = model.Name:lower()
+        local priority = 10
+        local tag = defaultTag or "Vehicle"
+
+        if n:find("stryker") or n:find("m1126") or n:find("icv") then
+            priority = 1
+            tag = "⭐ STRYKER"
+        elseif n:find("blackhawk") or n:find("uh60") or n:find("uh-60") or n:find("chinook") or n:find("ch47") or n:find("ch-47") or n:find("littlebird") or n:find("cougar") or n:find("humvee") or n:find("hmmwv") then
+            priority = 2
+            tag = "US / Player Vehicle"
+        elseif n:find("btr") or n:find("t72") or n:find("bmp") or n:find("mi17") or n:find("mi-17") or n:find("mi24") or n:find("d30") or n:find("howitzer") then
+            priority = 5
+            tag = "Enemy Vehicle"
+        end
+
         table.insert(list, {
             instance = model,
-            name = model.Name .. (tag and (" [" .. tag .. "]") or "")
+            rawName = model.Name,
+            name = model.Name .. " [" .. tag .. "]",
+            priority = priority
         })
     end
 
@@ -214,6 +232,14 @@ function VehicleHealth:getAvailableVehicles()
             end
         end
     end
+
+    -- Sort so Stryker (priority 1) is always at the very top of the list
+    table.sort(list, function(a, b)
+        if a.priority ~= b.priority then
+            return a.priority < b.priority
+        end
+        return a.rawName < b.rawName
+    end)
 
     return list
 end

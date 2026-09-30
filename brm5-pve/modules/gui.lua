@@ -387,8 +387,24 @@ function GUI:init(services, config, callbacks)
 
     createLabel(tabVehicle, "-- SELECT VEHICLE --", Color3.fromRGB(200, 200, 200))
 
+    -- Real-time Search Bar
+    local searchBox = Instance.new("TextBox", tabVehicle)
+    searchBox.Size = UDim2.new(1, -10, 0, 32)
+    searchBox.BackgroundColor3 = Color3.fromRGB(28, 28, 28)
+    searchBox.PlaceholderText = "🔍 Search (e.g. Stryker, M1126)..."
+    searchBox.PlaceholderColor3 = Color3.fromRGB(120, 120, 120)
+    searchBox.TextColor3 = Color3.new(1, 1, 1)
+    searchBox.Font = "Gotham"
+    searchBox.TextSize = 12
+    searchBox.Text = ""
+    searchBox.ClearTextOnFocus = false
+    Instance.new("UICorner", searchBox).CornerRadius = UDim.new(0, 6)
+
+    local searchPad = Instance.new("UIPadding", searchBox)
+    searchPad.PaddingLeft = UDim.new(0, 10)
+
     local vehicleListContainer = Instance.new("Frame", tabVehicle)
-    vehicleListContainer.Size = UDim2.new(1, -10, 0, 130)
+    vehicleListContainer.Size = UDim2.new(1, -10, 0, 160)
     vehicleListContainer.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
     vehicleListContainer.BorderSizePixel = 0
     Instance.new("UICorner", vehicleListContainer).CornerRadius = UDim.new(0, 6)
@@ -415,53 +431,61 @@ function GUI:init(services, config, callbacks)
         end
         vehicleButtons = {}
 
+        local query = searchBox.Text:lower():gsub("%s+", "")
         local vehicles = callbacks.getAvailableVehicles and callbacks.getAvailableVehicles() or {}
-        if #vehicles == 0 then
+        local count = 0
+
+        for _, vehData in ipairs(vehicles) do
+            local cleanName = vehData.name:lower():gsub("%s+", "")
+            if query == "" or cleanName:find(query, 1, true) then
+                count = count + 1
+                local vBtn = Instance.new("TextButton", vehicleScroll)
+                vBtn.Size = UDim2.new(1, -6, 0, 28)
+                local isSel = (selectedVehicleModel == vehData.instance)
+                vBtn.BackgroundColor3 = isSel and Color3.fromRGB(85, 170, 255) or Color3.fromRGB(35, 35, 35)
+                vBtn.TextColor3 = isSel and Color3.new(0, 0, 0) or Color3.new(1, 1, 1)
+                vBtn.Font = "GothamMedium"
+                vBtn.TextSize = 11
+                vBtn.Text = "🚙 " .. vehData.name
+                vBtn.TextXAlignment = Enum.TextXAlignment.Left
+                Instance.new("UICorner", vBtn).CornerRadius = UDim.new(0, 4)
+
+                local pad = Instance.new("UIPadding", vBtn)
+                pad.PaddingLeft = UDim.new(0, 8)
+
+                vBtn.MouseButton1Click:Connect(function()
+                    selectedVehicleModel = vehData.instance
+                    for _, b in pairs(vehicleButtons) do
+                        if b:IsA("TextButton") then
+                            b.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+                            b.TextColor3 = Color3.new(1, 1, 1)
+                        end
+                    end
+                    vBtn.BackgroundColor3 = Color3.fromRGB(85, 170, 255)
+                    vBtn.TextColor3 = Color3.new(0, 0, 0)
+
+                    if callbacks.onVehicleSelect then
+                        callbacks.onVehicleSelect(vehData.instance)
+                    end
+                end)
+
+                table.insert(vehicleButtons, vBtn)
+            end
+        end
+
+        if count == 0 then
             local emptyLabel = Instance.new("TextLabel", vehicleScroll)
             emptyLabel.Size = UDim2.new(1, -10, 0, 30)
-            emptyLabel.Text = "No vehicles found. Click Refresh."
+            emptyLabel.Text = (query == "") and "No vehicles found. Click Refresh." or "No vehicles matching search."
             emptyLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
             emptyLabel.Font = "Gotham"
             emptyLabel.TextSize = 11
             emptyLabel.BackgroundTransparency = 1
             table.insert(vehicleButtons, emptyLabel)
-            return
-        end
-
-        for _, vehData in ipairs(vehicles) do
-            local vBtn = Instance.new("TextButton", vehicleScroll)
-            vBtn.Size = UDim2.new(1, -6, 0, 28)
-            local isSel = (selectedVehicleModel == vehData.instance)
-            vBtn.BackgroundColor3 = isSel and Color3.fromRGB(85, 170, 255) or Color3.fromRGB(35, 35, 35)
-            vBtn.TextColor3 = isSel and Color3.new(0, 0, 0) or Color3.new(1, 1, 1)
-            vBtn.Font = "GothamMedium"
-            vBtn.TextSize = 11
-            vBtn.Text = "🚙 " .. vehData.name
-            vBtn.TextXAlignment = Enum.TextXAlignment.Left
-            Instance.new("UICorner", vBtn).CornerRadius = UDim.new(0, 4)
-
-            local pad = Instance.new("UIPadding", vBtn)
-            pad.PaddingLeft = UDim.new(0, 8)
-
-            vBtn.MouseButton1Click:Connect(function()
-                selectedVehicleModel = vehData.instance
-                for _, b in pairs(vehicleButtons) do
-                    if b:IsA("TextButton") then
-                        b.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
-                        b.TextColor3 = Color3.new(1, 1, 1)
-                    end
-                end
-                vBtn.BackgroundColor3 = Color3.fromRGB(85, 170, 255)
-                vBtn.TextColor3 = Color3.new(0, 0, 0)
-
-                if callbacks.onVehicleSelect then
-                    callbacks.onVehicleSelect(vehData.instance)
-                end
-            end)
-
-            table.insert(vehicleButtons, vBtn)
         end
     end
+
+    searchBox:GetPropertyChangedSignal("Text"):Connect(populateVehicleList)
 
     local refreshBtn = Instance.new("TextButton", tabVehicle)
     refreshBtn.Size = UDim2.new(1, -10, 0, 30)
