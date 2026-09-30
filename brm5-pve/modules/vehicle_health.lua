@@ -202,6 +202,59 @@ local function isLikelyVehicle(model)
     return false
 end
 
+-- BRM5 keeps the vehicle you are driving inside its own client modules. Parvus hooks these modules:
+-- MovementService._handler is the active Ground/Helicopter/Aircraft movement object, and _main is its main part.
+-- This finds the occupied vehicle regardless of what the model is named. Needs executor getmodules().
+local cachedMovementService = nil
+local function getMovementService()
+    if cachedMovementService then
+        return cachedMovementService
+    end
+    if type(getmodules) ~= "function" then
+        return nil
+    end
+    local okMods, mods = pcall(getmodules)
+    if not okMods or type(mods) ~= "table" then
+        return nil
+    end
+    for _, m in ipairs(mods) do
+        if m.Name == "MovementService" then
+            local okReq, svc = pcall(require, m)
+            if okReq and type(svc) == "table" then
+                cachedMovementService = svc
+                return svc
+            end
+        end
+    end
+    return nil
+end
+
+local function getMovementVehicle()
+    local svc = getMovementService()
+    if not svc then
+        return nil
+    end
+    local ok, result = pcall(function()
+        local handler = rawget(svc, "_handler")
+        local part = handler and (handler._main or handler._model)
+        if typeof(part) ~= "Instance" then
+            return nil
+        end
+        local top = part:IsA("Model") and part or part:FindFirstAncestorOfClass("Model")
+        while top and top.Parent and top.Parent:IsA("Model") do
+            top = top.Parent
+        end
+        if top and top.Name ~= "Male" and not top:FindFirstChild("Male") then
+            return top
+        end
+        return nil
+    end)
+    if ok then
+        return result
+    end
+    return nil
+end
+
 -- Vehicle names taken from the BRM5 ReplicatedStorage vehicle configs and the Unsorted dump
 local KNOWN_VEHICLES = {
     "fmtv", "vab", "m998", "humvee", "lmtv", "jeep", "ural", "srtv", "pvp", "cougar", "stryker",
@@ -251,14 +304,14 @@ function VehicleHealth:getAvailableVehicles()
     local list = {}
     local seen = {}
 
-    local function addCandidate(model, defaultTag)
+    local function addCandidate(model, defaultTag, force)
         if not model or not model:IsA("Model") or seen[model] then
             return
         end
         if model.Name == "Male" or model:FindFirstChild("Male") or game.Players:GetPlayerFromCharacter(model) ~= nil then
             return
         end
-        if not isVehicleCandidate(model) then
+        if not force and not isVehicleCandidate(model) then
             return
         end
         seen[model] = true
@@ -292,6 +345,11 @@ function VehicleHealth:getAvailableVehicles()
             tag = "Enemy Vehicle"
         end
 
+        if force then
+            priority = 0
+            tag = "🚗 CURRENT | " .. tag
+        end
+
         -- Generic "Model" names can't be searched, so expose the identified type in rawName too
         local rawName = model.Name
         if tag:find("STRYKER") and not n:find("stryker") then
@@ -309,6 +367,12 @@ function VehicleHealth:getAvailableVehicles()
     local live = workspace:FindFirstChild("Live")
     local unsorted = live and live:FindFirstChild("Unsorted")
     local tech = live and live:FindFirstChild("Tech")
+
+    -- 0. The vehicle the game says you are in right now (MovementService)
+    local currentVehicle = getMovementVehicle()
+    if currentVehicle then
+        addCandidate(currentVehicle, "Vehicle", true)
+    end
 
     -- 1. All models in workspace.Live.Unsorted (BRM5 vehicle folder)
     if unsorted then
@@ -365,6 +429,19 @@ function VehicleHealth:getAvailableVehicles()
         return a.rawName < b.rawName
     end)
 
+    -- DEBUG: remove once the Stryker shows up in the menu
+    print("[vehicle_health] getAvailableVehicles ran at " .. string.format("%.1f", os.clock()) .. " -> " .. #list .. " results")
+    for i = 1, math.min(#list, 6) do
+        print("  " .. i .. ". " .. list[i].name)
+    end
+    for _, m in ipairs(workspace:GetChildren()) do
+        if m:IsA("Model") and m.Name == "Model" and #m:GetDescendants() > 100 and not m:FindFirstChild("Male") then
+            local w, g, h = getVehicleSignature(m)
+            print("  [scan] Workspace.Model wheels=" .. w .. " ground=" .. tostring(g) .. " heli=" .. tostring(h)
+                .. " seen=" .. tostring(seen[m] == true) .. " candidate=" .. tostring(isVehicleCandidate(m)))
+        end
+    end
+
     return list
 end
 
@@ -395,6 +472,12 @@ local function getPlayerVehicle(localPlayer)
     end
 
     local camera = workspace.CurrentCamera
+
+    -- Method -1: ask the game's own MovementService (how Parvus finds the active vehicle)
+    local movementVehicle = getMovementVehicle()
+    if movementVehicle then
+        return movementVehicle
+    end
 
     -- Method 0: Check Camera.CameraSubject (most reliable in Roblox vehicles)
     if camera and camera.CameraSubject then
