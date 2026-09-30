@@ -21,12 +21,65 @@ local function getCharacter(localPlayer)
         return localPlayer.Character
     end
 
-    -- In BRM5, characters are frequently located in workspace.Live
+    local camera = workspace.CurrentCamera
+
+    -- 1. Try CameraSubject if it's a Humanoid
+    if camera and camera.CameraSubject and camera.CameraSubject:IsA("Humanoid") then
+        local parentModel = camera.CameraSubject.Parent
+        if parentModel and parentModel:IsA("Model") then
+            return parentModel
+        end
+    end
+
+    -- 2. Try Players:GetPlayerFromCharacter
+    for _, model in ipairs(workspace:GetChildren()) do
+        if model:IsA("Model") then
+            local ok, p = pcall(game.Players.GetPlayerFromCharacter, game.Players, model)
+            if ok and p == localPlayer then
+                return model
+            end
+        end
+    end
+
     local liveFolder = workspace:FindFirstChild("Live")
     if liveFolder then
         local liveChar = liveFolder:FindFirstChild(localPlayer.Name)
         if liveChar then
             return liveChar
+        end
+        for _, model in ipairs(liveFolder:GetChildren()) do
+            if model:IsA("Model") then
+                local ok, p = pcall(game.Players.GetPlayerFromCharacter, game.Players, model)
+                if ok and p == localPlayer then
+                    return model
+                end
+            end
+        end
+    end
+
+    -- 3. Camera proximity fallback for BRM5 "Male" models
+    if camera then
+        local bestModel = nil
+        local bestDist = 10
+        local searchFolders = {liveFolder, workspace}
+        for _, folder in ipairs(searchFolders) do
+            if folder then
+                for _, model in ipairs(folder:GetChildren()) do
+                    if model:IsA("Model") and (model.Name == "Male" or model.Name == localPlayer.Name) and model:FindFirstChildOfClass("Humanoid") then
+                        local head = model:FindFirstChild("Head") or model:FindFirstChild("HumanoidRootPart")
+                        if head then
+                            local dist = (head.Position - camera.CFrame.Position).Magnitude
+                            if dist < bestDist then
+                                bestDist = dist
+                                bestModel = model
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        if bestModel then
+            return bestModel
         end
     end
 
@@ -44,9 +97,7 @@ local function findVehicleRoot(instance)
 
     while current and current ~= workspace and current ~= workspace:FindFirstChild("Live") do
         if current:IsA("Model") then
-            -- Avoid considering the player's own character as a vehicle
-            local hum = current:FindFirstChildOfClass("Humanoid")
-            local isPlayerModel = game.Players:GetPlayerFromCharacter(current) ~= nil
+            local isPlayerModel = game.Players:GetPlayerFromCharacter(current) ~= nil or current.Name == "Male"
             if not isPlayerModel then
                 lastModel = current
             end
@@ -63,7 +114,10 @@ local function isLikelyVehicle(model)
         return false
     end
 
-    -- If named with known vehicle keywords
+    if model.Name == "Male" or game.Players:GetPlayerFromCharacter(model) ~= nil then
+        return false
+    end
+
     local name = model.Name:lower()
     local keywords = {"stryker", "vehicle", "m1126", "heli", "blackhawk", "truck", "car", "jeep", "tank", "btr", "boat", "plane", "uh-60", "ch-47", "mi-17"}
     for _, kw in ipairs(keywords) do
@@ -72,22 +126,19 @@ local function isLikelyVehicle(model)
         end
     end
 
-    -- Check for VehicleSeat or Seat
     if model:FindFirstChildOfClass("VehicleSeat") or model:FindFirstChildOfClass("Seat") then
         return true
     end
 
-    -- Check common vehicle folders
     if model:FindFirstChild("Body") or model:FindFirstChild("Chassis") or model:FindFirstChild("Engine") or model:FindFirstChild("Seats") then
         return true
     end
 
-    -- Check descendants for seats
     for _, desc in ipairs(model:GetChildren()) do
         if desc:IsA("VehicleSeat") or desc:IsA("Seat") then
             return true
         end
-        if desc.Name == "Seats" or desc.Name == "Chassis" or desc.Name == "Interior" then
+        if desc.Name == "Seats" or desc.Name == "Chassis" or desc.Name == "Interior" or desc.Name == "DriveSeat" then
             return true
         end
     end
@@ -97,13 +148,24 @@ end
 
 -- Attempts to find the vehicle model the player is in through multiple detection methods
 local function getPlayerVehicle(localPlayer)
-    local character = getCharacter(localPlayer)
-    if not character then
-        return nil
+    local camera = workspace.CurrentCamera
+
+    -- Method 0: Check Camera.CameraSubject (most reliable in Roblox vehicles)
+    if camera and camera.CameraSubject then
+        local subj = camera.CameraSubject
+        local veh = findVehicleRoot(subj)
+        if veh and isLikelyVehicle(veh) then
+            return veh
+        end
+        local subjModel = subj:FindFirstAncestorOfClass("Model")
+        if subjModel and isLikelyVehicle(subjModel) then
+            return subjModel
+        end
     end
 
-    local humanoid = character:FindFirstChildOfClass("Humanoid")
-    local rootPart = character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("Torso") or character:FindFirstChild("UpperTorso") or character:FindFirstChild("Root")
+    local character = getCharacter(localPlayer)
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    local rootPart = character and (character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("Torso") or character:FindFirstChild("UpperTorso") or character:FindFirstChild("Root") or character:FindFirstChild("Head"))
 
     -- Method 1: Humanoid.SitPart (Standard Roblox Seating)
     if humanoid and humanoid.SitPart then
@@ -125,15 +187,17 @@ local function getPlayerVehicle(localPlayer)
     end
 
     -- Method 3: Check Welds / WeldConstraints / Motor6Ds attached to character parts
-    for _, part in ipairs(character:GetChildren()) do
-        if part:IsA("BasePart") then
-            for _, child in ipairs(part:GetChildren()) do
-                if child:IsA("Weld") or child:IsA("WeldConstraint") or child:IsA("Motor6D") then
-                    local other = (child.Part0 == part) and child.Part1 or child.Part0
-                    if other and other:IsDescendantOf(workspace) and not other:IsDescendantOf(character) then
-                        local veh = findVehicleRoot(other)
-                        if veh and isLikelyVehicle(veh) then
-                            return veh
+    if character then
+        for _, part in ipairs(character:GetChildren()) do
+            if part:IsA("BasePart") then
+                for _, child in ipairs(part:GetChildren()) do
+                    if child:IsA("Weld") or child:IsA("WeldConstraint") or child:IsA("Motor6D") then
+                        local other = (child.Part0 == part) and child.Part1 or child.Part0
+                        if other and other:IsDescendantOf(workspace) and not other:IsDescendantOf(character) then
+                            local veh = findVehicleRoot(other)
+                            if veh and isLikelyVehicle(veh) then
+                                return veh
+                            end
                         end
                     end
                 end
@@ -142,43 +206,52 @@ local function getPlayerVehicle(localPlayer)
     end
 
     -- Method 4: Scan workspace seats for Occupant == humanoid
-    local function checkSeatsInFolder(folder)
-        if not folder then return nil end
-        for _, obj in ipairs(folder:GetChildren()) do
-            if obj:IsA("Model") then
-                for _, desc in ipairs(obj:GetDescendants()) do
-                    if (desc:IsA("Seat") or desc:IsA("VehicleSeat")) and humanoid and desc.Occupant == humanoid then
-                        return obj
-                    end
-                end
-            end
-        end
-        return nil
-    end
-
-    local seatOccupantVeh = checkSeatsInFolder(workspace:FindFirstChild("Live")) or checkSeatsInFolder(workspace)
-    if seatOccupantVeh then
-        return seatOccupantVeh
-    end
-
-    -- Method 5: Proximity / Bounding Box Check
-    -- If character root is inside or directly above a vehicle's bounding box (< 6 studs)
-    if rootPart then
-        local function checkProximityInFolder(folder)
+    if humanoid then
+        local function checkSeatsInFolder(folder)
             if not folder then return nil end
             for _, obj in ipairs(folder:GetChildren()) do
                 if obj:IsA("Model") and isLikelyVehicle(obj) then
-                    local ok, cframe, size = pcall(function() return obj:GetBoundingBox() end)
-                    if ok and cframe and size then
-                        local relPos = cframe:PointToObjectSpace(rootPart.Position)
-                        local halfSize = size / 2 + Vector3.new(2, 4, 2)
-                        if math.abs(relPos.X) <= halfSize.X and math.abs(relPos.Y) <= halfSize.Y and math.abs(relPos.Z) <= halfSize.Z then
+                    for _, desc in ipairs(obj:GetDescendants()) do
+                        if (desc:IsA("Seat") or desc:IsA("VehicleSeat")) and desc.Occupant == humanoid then
                             return obj
                         end
                     end
                 end
             end
             return nil
+        end
+
+        local seatOccupantVeh = checkSeatsInFolder(workspace:FindFirstChild("Live")) or checkSeatsInFolder(workspace)
+        if seatOccupantVeh then
+            return seatOccupantVeh
+        end
+    end
+
+    -- Method 5: Proximity / Bounding Box Check from Character or Camera
+    local checkPos = rootPart and rootPart.Position or (camera and camera.CFrame.Position)
+    if checkPos then
+        local function checkProximityInFolder(folder)
+            if not folder then return nil end
+            local bestVeh = nil
+            local bestDist = 18
+            for _, obj in ipairs(folder:GetChildren()) do
+                if obj:IsA("Model") and isLikelyVehicle(obj) then
+                    local ok, cframe, size = pcall(function() return obj:GetBoundingBox() end)
+                    if ok and cframe and size then
+                        local relPos = cframe:PointToObjectSpace(checkPos)
+                        local halfSize = size / 2 + Vector3.new(4, 6, 4)
+                        if math.abs(relPos.X) <= halfSize.X and math.abs(relPos.Y) <= halfSize.Y and math.abs(relPos.Z) <= halfSize.Z then
+                            return obj
+                        end
+                        local centerDist = (cframe.Position - checkPos).Magnitude
+                        if centerDist < bestDist then
+                            bestDist = centerDist
+                            bestVeh = obj
+                        end
+                    end
+                end
+            end
+            return bestVeh
         end
 
         local proxVeh = checkProximityInFolder(workspace:FindFirstChild("Live")) or checkProximityInFolder(workspace)
