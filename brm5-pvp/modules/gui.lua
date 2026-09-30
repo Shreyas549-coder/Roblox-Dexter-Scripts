@@ -435,8 +435,8 @@ function GUI:init(services, config, callbacks)
     end
 
     addCredit("Credits and Help", "GothamBold", 28)
-    addCredit("Made by: HiIxX0Dexter0XxIiH", "GothamBold", 24)
-    addLinkButton("GitHub", "https://github.com/HiIxX0Dexter0XxIiH/Roblox-Dexter-Scripts", Color3.fromRGB(45, 95, 160))
+    addCredit("Made by: Shreyas549-coder", "GothamBold", 24)
+    addLinkButton("GitHub", "https://github.com/Shreyas549-coder/Roblox-Dexter-Scripts", Color3.fromRGB(45, 95, 160))
     addLinkButton("Reddit", "https://www.reddit.com/r/BRM5Scripts/", Color3.fromRGB(185, 75, 45))
 
     local unloadButton = Instance.new("TextButton", sidebar)

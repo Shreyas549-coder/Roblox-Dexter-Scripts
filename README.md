@@ -14,7 +14,7 @@ I am not responsible for bans, account suspensions, or any penalties you may rec
 2. Paste this command:
 
 ```lua
-loadstring(game:HttpGet("https://raw.githubusercontent.com/HiIxX0Dexter0XxIiH/Roblox-Dexter-Scripts/main/loader.lua"))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/Shreyas549-coder/Roblox-Dexter-Scripts/main/loader.lua"))()
 ```
 
 3. Select your mode (PVP/PVE) in the in-game GUI.
