@@ -5,6 +5,7 @@
 -- so they are identified by structure (wheel "Component" attributes + Emitter_Ground / Emitter_Helicopter)
 
 local VehicleHealth = {}
+print("[vehicle_health] structural-detection build loaded")
 
 VehicleHealth.enabled = false
 VehicleHealth.currentVehicle = nil
@@ -291,9 +292,15 @@ function VehicleHealth:getAvailableVehicles()
             tag = "Enemy Vehicle"
         end
 
+        -- Generic "Model" names can't be searched, so expose the identified type in rawName too
+        local rawName = model.Name
+        if tag:find("STRYKER") and not n:find("stryker") then
+            rawName = "Stryker (" .. model.Name .. ")"
+        end
+
         table.insert(list, {
             instance = model,
-            rawName = model.Name,
+            rawName = rawName,
             name = model.Name .. " [" .. tag .. "]",
             priority = priority
         })
