@@ -165,13 +165,36 @@ function VehicleHealth:getAvailableVehicles()
         })
     end
 
+    local live = workspace:FindFirstChild("Live")
+    local unsorted = live and live:FindFirstChild("Unsorted")
+    local tech = live and live:FindFirstChild("Tech")
+
+    -- 1. All models in workspace.Live.Unsorted (BRM5 vehicle folder)
+    if unsorted then
+        for _, obj in ipairs(unsorted:GetChildren()) do
+            if obj:IsA("Model") and obj.Name ~= "Male" then
+                addCandidate(obj, "Live")
+            end
+        end
+    end
+
+    if tech then
+        for _, obj in ipairs(tech:GetChildren()) do
+            if obj:IsA("Model") and obj.Name ~= "Male" then
+                addCandidate(obj, "Tech")
+            end
+        end
+    end
+
     local searchFolders = {
-        workspace:FindFirstChild("Live"),
+        unsorted,
+        tech,
+        live,
         workspace:FindFirstChild("Vehicles"),
         workspace
     }
 
-    -- 1. Models with vehicle keywords (Stryker, M1126, Heli, etc.)
+    -- 2. Models with vehicle keywords (Stryker, M1126, Heli, BTR, Tank, etc.)
     for _, folder in ipairs(searchFolders) do
         if folder then
             for _, obj in ipairs(folder:GetChildren()) do
@@ -182,36 +205,12 @@ function VehicleHealth:getAvailableVehicles()
         end
     end
 
-    -- 2. Models containing a VehicleSeat or Seat
-    for _, folder in ipairs(searchFolders) do
-        if folder then
-            for _, obj in ipairs(folder:GetChildren()) do
-                if obj:IsA("Model") and not seen[obj] then
-                    local seat = obj:FindFirstChildOfClass("VehicleSeat") or obj:FindFirstChildOfClass("Seat")
-                    if seat then
-                        addCandidate(obj, "Seat: " .. seat.Name)
-                    end
-                end
-            end
-        end
-    end
-
-    -- 3. Any descendant Model matching Stryker/Vehicle
+    -- 3. Any descendant Model matching Stryker / Vehicle / Tank / Heli
     for _, desc in ipairs(workspace:GetDescendants()) do
-        if desc:IsA("Model") and not seen[desc] then
+        if desc:IsA("Model") and not seen[desc] and desc.Name ~= "Male" then
             local n = desc.Name:lower()
-            if n:find("stryker") or n:find("m1126") or n:find("vehicle") or n:find("heli") or n:find("truck") then
+            if n:find("stryker") or n:find("m1126") or n:find("btr") or n:find("t72") or n:find("bmp") or n:find("vehicle") or n:find("heli") or n:find("truck") then
                 addCandidate(desc, "Keyword")
-            end
-        end
-    end
-
-    -- 4. Any other non-character models in Live folder
-    local live = workspace:FindFirstChild("Live")
-    if live then
-        for _, obj in ipairs(live:GetChildren()) do
-            if obj:IsA("Model") and not seen[obj] and obj.Name ~= "Male" then
-                addCandidate(obj, "Live Model")
             end
         end
     end
