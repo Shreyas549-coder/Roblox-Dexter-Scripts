@@ -11,37 +11,49 @@ local GITHUB_BASE = "https://raw.githubusercontent.com/HiIxX0Dexter0XxIiH/Roblox
 local CACHE_BUSTER = MAIN_VERSION .. "-" .. tostring(os.time())
 
 local function loadModule(moduleName)
-    local url = GITHUB_BASE .. moduleName .. ".lua?v=" .. CACHE_BUSTER
+    local content = nil
 
-    local okResponse, response = pcall(function()
-        return game:HttpGet(url)
-    end)
-    if not okResponse then
-        warn("Failed to download module: " .. moduleName)
-        warn("URL: " .. url)
-        warn("HttpGet error: " .. tostring(response))
-        return nil
+    -- Check local file in executor workspace (for local testing/offline use)
+    if type(isfile) == "function" and type(readfile) == "function" then
+        local localPaths = {
+            "brm5-pve/modules/" .. moduleName .. ".lua",
+            "modules/" .. moduleName .. ".lua",
+            moduleName .. ".lua"
+        }
+        for _, path in ipairs(localPaths) do
+            if isfile(path) then
+                local okRead, readContent = pcall(readfile, path)
+                if okRead and type(readContent) == "string" and readContent ~= "" then
+                    content = readContent
+                    break
+                end
+            end
+        end
     end
 
-    if type(response) ~= "string" or response == "" then
-        warn("Module download returned empty content: " .. moduleName)
-        warn("URL: " .. url)
-        return nil
+    -- Download from GitHub if not found locally
+    if not content then
+        local url = GITHUB_BASE .. moduleName .. ".lua?v=" .. CACHE_BUSTER
+        local okResponse, response = pcall(function()
+            return game:HttpGet(url)
+        end)
+        if okResponse and type(response) == "string" and response ~= "" then
+            content = response
+        else
+            warn("Failed to download module: " .. moduleName .. " (" .. tostring(response) .. ")")
+            return nil
+        end
     end
 
-    local chunk, compileError = loadstring(response)
+    local chunk, compileError = loadstring(content)
     if not chunk then
-        warn("Failed to compile module: " .. moduleName)
-        warn("URL: " .. url)
-        warn("Compile error: " .. tostring(compileError))
+        warn("Failed to compile module: " .. moduleName .. ": " .. tostring(compileError))
         return nil
     end
 
     local okRun, result = pcall(chunk)
     if not okRun then
-        warn("Failed to execute module: " .. moduleName)
-        warn("URL: " .. url)
-        warn("Runtime error: " .. tostring(result))
+        warn("Failed to execute module: " .. moduleName .. ": " .. tostring(result))
         return nil
     end
 
@@ -55,9 +67,10 @@ local TargetSizing = loadModule("silent")
 local Markers = loadModule("walls")
 local Lighting = loadModule("fullbright")
 local Weapons = loadModule("norecoil")
+local VehicleHealth = loadModule("vehicle_health")
 local GUI = loadModule("gui")
 
-if not (Services and Config and NPCManager and TargetSizing and Markers and Lighting and Weapons and GUI) then
+if not (Services and Config and NPCManager and TargetSizing and Markers and Lighting and Weapons and VehicleHealth and GUI) then
     error("Failed to load one or more modules. Please verify the remote module files.")
 end
 
@@ -149,6 +162,15 @@ local callbacks = {
         saveConfig()
     end,
 
+    onVehicleGodToggle = function(enabled)
+        Config.vehicleGodEnabled = enabled
+        VehicleHealth.enabled = enabled
+        if not enabled then
+            VehicleHealth:cleanup()
+        end
+        saveConfig()
+    end,
+
     onVisibleRChange = function(value)
         Config:updateVisibleColor(value, nil, nil)
         saveConfig()
@@ -199,6 +221,7 @@ local callbacks = {
         Markers.disable()
         TargetSizing:cleanup(NPCManager)
         NPCManager:cleanup()
+        VehicleHealth:cleanup()
         Lighting:restoreOriginal(Services.Lighting)
         Config.guiVisible = false
         saveConfig()
@@ -206,6 +229,11 @@ local callbacks = {
         GUI:destroy()
     end
 }
+
+-- Apply saved vehicle god state
+if Config.vehicleGodEnabled then
+    VehicleHealth.enabled = true
+end
 
 GUI:init(Services, Config, callbacks)
 syncMouseState()
@@ -232,6 +260,8 @@ table.insert(runtimeConnections, Services.RunService.Heartbeat:Connect(function(
         syncMouseState()
     end
     Lighting:update(Services.Lighting, Config)
+    VehicleHealth:update(Services.localPlayer)
+    GUI:updateVehicleStatus(VehicleHealth:getStatus())
 
     npcAccumulator = npcAccumulator + dt
     if npcAccumulator >= Config.NPC_REFRESH_INTERVAL then

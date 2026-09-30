@@ -291,6 +291,7 @@ function GUI:init(services, config, callbacks)
     local tabCombat = createTab(container)
     local tabVisuals = createTab(container)
     local tabWeapons = createTab(container)
+    local tabVehicle = createTab(container)
     local tabColors = createTab(container)
     local tabCredits = createTab(container)
     tabCombat.Visible = true
@@ -299,6 +300,7 @@ function GUI:init(services, config, callbacks)
         combat = tabCombat,
         visuals = tabVisuals,
         weapons = tabWeapons,
+        vehicle = tabVehicle,
         colors = tabColors,
         credits = tabCredits
     }
@@ -338,6 +340,7 @@ function GUI:init(services, config, callbacks)
     addTabBtn("Combat", tabCombat)
     addTabBtn("Visuals", tabVisuals)
     addTabBtn("Weapons", tabWeapons)
+    addTabBtn("Vehicle", tabVehicle)
     addTabBtn("Colors", tabColors)
     addTabBtn("Credits and Help", tabCredits)
 
@@ -367,6 +370,25 @@ function GUI:init(services, config, callbacks)
                                    Color3.fromRGB(255, 100, 100))
     createButton(tabWeapons, "No recoil", config.patchOptions.recoil, callbacks.onStabilityToggle)
     createButton(tabWeapons, "All Firemodes", config.patchOptions.firemodes, callbacks.onFiremodeOptionsToggle)
+
+    -- VEHICLE TAB
+    createButton(tabVehicle, "Vehicle God Mode 🛡️", config.vehicleGodEnabled, callbacks.onVehicleGodToggle)
+
+    local vehicleStatusLabel = Instance.new("TextLabel", tabVehicle)
+    vehicleStatusLabel.Size = UDim2.new(1, -10, 0, 35)
+    vehicleStatusLabel.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+    vehicleStatusLabel.Text = "Status: Disabled"
+    vehicleStatusLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+    vehicleStatusLabel.Font = "Gotham"
+    vehicleStatusLabel.TextSize = 12
+    vehicleStatusLabel.TextWrapped = true
+    Instance.new("UICorner", vehicleStatusLabel).CornerRadius = UDim.new(0, 6)
+    self.vehicleStatusLabel = vehicleStatusLabel
+
+    createInfoLabel(
+        tabVehicle,
+        "When enabled, the script will detect the vehicle you're sitting in and continuously set its health to max, preventing it from being destroyed. Get into a vehicle first, then enable this."
+    )
 
     -- COLORS TAB
     local layoutIndex = 1
@@ -480,6 +502,13 @@ function GUI:toggleVisibility()
     return false
 end
 
+-- Update vehicle status label text
+function GUI:updateVehicleStatus(statusText)
+    if self.vehicleStatusLabel then
+        self.vehicleStatusLabel.Text = "Status: " .. statusText
+    end
+end
+
 -- Destroy GUI
 function GUI:destroy()
     if self.screenGui then
@@ -490,6 +519,7 @@ function GUI:destroy()
     self.modalOverlay = nil
     self.cursorIndicator = nil
     self.toggleButton = nil
+    self.vehicleStatusLabel = nil
 end
 
 return GUI

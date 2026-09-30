@@ -19,6 +19,7 @@ Config.highlightEnabled = false  -- Visibility markers
 Config.sizingEnabled = false     -- Target sizing
 Config.showTargetBox = false     -- Shows target bounds
 Config.fullBrightEnabled = false -- Removes shadows/darkness
+Config.vehicleGodEnabled = false  -- Vehicle god mode (max HP lock)
 Config.guiVisible = true         -- Menu visibility
 Config.isUnloaded = false        -- To stop the script
 
@@ -67,6 +68,7 @@ function Config:serialize()
         sizingEnabled = self.sizingEnabled,
         showTargetBox = self.showTargetBox,
         fullBrightEnabled = self.fullBrightEnabled,
+        vehicleGodEnabled = self.vehicleGodEnabled,
         npcDetectionRadius = self.npcDetectionRadius,
         patchOptions = {
             recoil = self.patchOptions.recoil,
@@ -90,6 +92,7 @@ function Config:applySavedData(data)
     if data.sizingEnabled ~= nil then self.sizingEnabled = data.sizingEnabled end
     if data.showTargetBox ~= nil then self.showTargetBox = data.showTargetBox end
     if data.fullBrightEnabled ~= nil then self.fullBrightEnabled = data.fullBrightEnabled end
+    if data.vehicleGodEnabled ~= nil then self.vehicleGodEnabled = data.vehicleGodEnabled end
     if type(data.patchOptions) == "table" then
         if data.patchOptions.recoil ~= nil then self.patchOptions.recoil = data.patchOptions.recoil end
         if data.patchOptions.firemodes ~= nil then self.patchOptions.firemodes = data.patchOptions.firemodes end

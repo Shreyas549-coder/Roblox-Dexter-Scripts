@@ -66,6 +66,7 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/HiIxX0Dexter0XxIiH/Ro
 - Anti-recoil
 - All firemodes
 - Fullbright
+- Vehicle God Mode (locks vehicle HP to max, auto-repairs, prevents destruction)
 
 ---
 
