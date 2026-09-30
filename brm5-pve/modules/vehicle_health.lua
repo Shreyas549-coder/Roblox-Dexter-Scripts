@@ -1,134 +1,244 @@
--- Vehicle Health Module
--- Reads the vehicle the player is in, protects it from damage, and prevents explosions
--- Handles multiple vehicle architectures (Roblox Seats, welded mounts, Attributes, ValueBases, Humanoids, sub-components)
--- BRM5 note: spawned vehicles are parented to Workspace and are all named just "Model",
--- so they are identified by structure (wheel "Component" attributes + Emitter_Ground / Emitter_Helicopter)
+-- Vehicle Health Module v2 — reads HP from BRM5's ValuesVehicle remote
+-- Preserves the original public API: enabled, update, getStatus, cleanup,
+-- selectVehicle, getAvailableVehicles.
+-- Also keeps HUD toggle on End key.
 
 local VehicleHealth = {}
-print("[vehicle_health] structural-detection build loaded")
+print("[vehicle_health] v2 remote-sniffer build loaded")
 
 VehicleHealth.enabled = false
 VehicleHealth.currentVehicle = nil
 VehicleHealth.vehicleName = nil
 VehicleHealth.selectedVehicle = nil
-VehicleHealth.trackedValues = {} -- Array of { obj = Instance, max = number, isAttribute = bool, attrName = string }
+VehicleHealth.trackedValues = {}
 VehicleHealth.connections = {}
 VehicleHealth.lastStatus = "Disabled"
-VehicleHealth.hudEnabled = true -- on-screen health readout, independent of the menu (toggle with End)
+VehicleHealth.hudEnabled = true
 VehicleHealth.hudGui = nil
 VehicleHealth.hudLabel = nil
 VehicleHealth.hudConn = nil
 VehicleHealth.hudVehicle = nil
 VehicleHealth.hudLast = 0
 
--- Helper to find the actual player character
-local function getCharacter(localPlayer)
-    if not localPlayer then
-        return nil
-    end
+-- =========================================================
+-- REMOTE SNIFFER — hooks ReplicatedStorage.Events.RemoteEvent
+-- =========================================================
+local RS = game:GetService("ReplicatedStorage")
+local EventsFolder = RS:FindFirstChild("Events")
+local MainRemote = EventsFolder and EventsFolder:FindFirstChild("RemoteEvent")
 
-    if localPlayer.Character and localPlayer.Character.Parent then
-        return localPlayer.Character
-    end
+local hpState = {
+    current = nil,
+    max = nil,
+    guid = nil,
+    table_ref = nil,
+    field = nil,
+    max_field = nil,
+    last_update = 0,
+    dumped = 0,
+    known_fields = {},
+}
 
-    local camera = workspace.CurrentCamera
-
-    -- 1. Try CameraSubject if it's a Humanoid
-    if camera and camera.CameraSubject and camera.CameraSubject:IsA("Humanoid") then
-        local parentModel = camera.CameraSubject.Parent
-        if parentModel and parentModel:IsA("Model") then
-            return parentModel
+-- one-time payload dump helper
+local function dumpTable(tbl, depth, maxDepth, budget, indent)
+    indent = indent or ""
+    depth = depth or 0
+    if depth > maxDepth or budget[1] <= 0 then return end
+    for k, v in pairs(tbl) do
+        if budget[1] <= 0 then return end
+        budget[1] = budget[1] - 1
+        local kk = type(k) == "string" and k or ("[" .. tostring(k) .. "]")
+        local tv = type(v)
+        if tv == "number" or tv == "string" or tv == "boolean" then
+            print(indent .. kk .. " = " .. tostring(v))
+        elseif tv == "table" then
+            local n = 0; for _ in pairs(v) do n = n + 1 end
+            print(indent .. kk .. " = <table " .. n .. " keys>")
+            dumpTable(v, depth + 1, maxDepth, budget, indent .. "  ")
+        elseif typeof(v) == "Instance" then
+            print(indent .. kk .. " = <Instance " .. v.ClassName .. ">")
+        else
+            print(indent .. kk .. " = <" .. tv .. ">")
         end
     end
+end
 
-    -- 2. Try Players:GetPlayerFromCharacter
-    for _, model in ipairs(workspace:GetChildren()) do
-        if model:IsA("Model") then
-            local ok, p = pcall(game.Players.GetPlayerFromCharacter, game.Players, model)
-            if ok and p == localPlayer then
-                return model
+local function scoreField(name)
+    local n = tostring(name):lower():gsub("[%s_%-]", "")
+    if n:find("max") then return 0 end
+    if n:find("health") or n:find("hull") then return 10 end
+    if n == "hp" then return 10 end
+    if n:find("damage") then return 5 end
+    if n:find("armor") or n:find("armour") then return 6 end
+    return 0
+end
+
+local function scanTable(tbl, depth, out)
+    if type(tbl) ~= "table" or depth > 3 then return end
+    for k, v in pairs(tbl) do
+        if type(v) == "number" and type(k) == "string" then
+            local s = scoreField(k)
+            if s > 0 then
+                local rec = { key = k, value = v, score = s, depth = depth, parent = tbl }
+                if not out.best or s > out.best.score then out.best = rec end
             end
-        end
-    end
-
-    local liveFolder = workspace:FindFirstChild("Live")
-    if liveFolder then
-        local liveChar = liveFolder:FindFirstChild(localPlayer.Name)
-        if liveChar then
-            return liveChar
-        end
-        for _, model in ipairs(liveFolder:GetChildren()) do
-            if model:IsA("Model") then
-                local ok, p = pcall(game.Players.GetPlayerFromCharacter, game.Players, model)
-                if ok and p == localPlayer then
-                    return model
+            -- also look for max pairs
+            local kl = k:lower()
+            if kl:find("max") and not out.maxField then
+                local base = kl:gsub("max", ""):gsub("[%s_%-]", "")
+                if base:find("health") or base:find("hull") or base == "hp" then
+                    out.maxField = k
+                    out.maxValue = v
                 end
             end
+        elseif type(v) == "table" then
+            scanTable(v, depth + 1, out)
         end
     end
+end
 
-    -- 3. Camera proximity fallback for BRM5 "Male" models
-    if camera then
-        local bestModel = nil
-        local bestDist = 10
-        local searchFolders = {liveFolder, workspace}
-        for _, folder in ipairs(searchFolders) do
-            if folder then
-                for _, model in ipairs(folder:GetChildren()) do
-                    if model:IsA("Model") and (model.Name == "Male" or model.Name == localPlayer.Name) and model:FindFirstChildOfClass("Humanoid") then
-                        local head = model:FindFirstChild("Head") or model:FindFirstChild("HumanoidRootPart")
-                        if head then
-                            local dist = (head.Position - camera.CFrame.Position).Magnitude
-                            if dist < bestDist then
-                                bestDist = dist
-                                bestModel = model
-                            end
-                        end
+local function sniffPayload(name, guid, tbl)
+    if type(tbl) ~= "table" then return end
+    local n = 0; for _ in pairs(tbl) do n = n + 1 end
+    if n == 0 then return end
+
+    -- one-time payload dump so we can inspect the shape
+    if os.clock() - hpState.dumped > 5 then
+        hpState.dumped = os.clock()
+        print(("[vehicle_health] payload '%s' guid=%s keys=%d"):format(tostring(name), tostring(guid), n))
+        dumpTable(tbl, 0, 3, {150}, "   ")
+    end
+
+    local out = { best = nil, maxField = nil, maxValue = nil }
+    scanTable(tbl, 1, out)
+    if out.best then
+        hpState.current = out.best.value
+        hpState.guid = guid
+        hpState.table_ref = out.best.parent
+        hpState.field = out.best.key
+        hpState.last_update = os.clock()
+        if out.maxField then
+            hpState.max_field = out.maxField
+            hpState.max = out.maxValue
+        end
+        if not hpState.known_fields[out.best.key] then
+            hpState.known_fields[out.best.key] = true
+            print(("[vehicle_health] HP field picked: %s = %s (max=%s)"):format(
+                tostring(out.best.key), tostring(out.best.value), tostring(hpState.max)))
+        end
+    end
+end
+
+local function installHook()
+    if not MainRemote then return 0 end
+    if type(getconnections) ~= "function" or type(hookfunction) ~= "function" then
+        warn("[vehicle_health] executor lacks getconnections/hookfunction")
+        return 0
+    end
+    local ok, conns = pcall(getconnections, MainRemote.OnClientEvent)
+    if not ok or type(conns) ~= "table" then return 0 end
+    local hooked = 0
+    for _, c in ipairs(conns) do
+        local original = c.Function
+        if type(original) == "function" then
+            local okHook = pcall(function()
+                hookfunction(original, function(...)
+                    local args = {...}
+                    local rname = args[1]
+                    if rname == "ValuesVehicle" or rname == "ReplicateVehicle" then
+                        pcall(sniffPayload, rname, args[2], args[3])
+                    end
+                    return original(...)
+                end)
+            end)
+            if okHook then hooked = hooked + 1 end
+        end
+    end
+    return hooked
+end
+
+local firstHooked = installHook()
+print("[vehicle_health] initial OnClientEvent hooks: " .. firstHooked)
+
+task.spawn(function()
+    while true do
+        task.wait(5)
+        installHook()
+    end
+end)
+
+-- =========================================================
+-- Configs.Vehicle — lookup max HP by vehicle type name
+-- =========================================================
+local configMaxCache = {}
+local function getConfigMaxHP(vehicleType)
+    if not vehicleType then return nil end
+    if configMaxCache[vehicleType] ~= nil then return configMaxCache[vehicleType] or nil end
+    configMaxCache[vehicleType] = false
+    local shared = RS:FindFirstChild("Shared")
+    local configs = shared and shared:FindFirstChild("Configs")
+    local vehicleCfg = configs and configs:FindFirstChild("Vehicle")
+    if not vehicleCfg then return nil end
+    local ok, data = pcall(require, vehicleCfg)
+    if not ok or type(data) ~= "table" then return nil end
+    for _, category in pairs(data) do
+        if type(category) == "table" then
+            local entry = category[vehicleType]
+            if type(entry) == "table" then
+                for _, k in ipairs({"MaxHealth","Health","MaxHP","HP","MaxHull","Hull","MaxArmor"}) do
+                    if type(entry[k]) == "number" and entry[k] > 0 then
+                        configMaxCache[vehicleType] = entry[k]
+                        return entry[k]
                     end
                 end
+                -- dump keys once for debugging
+                if not VehicleHealth._cfgDumped then
+                    VehicleHealth._cfgDumped = true
+                    local keys = {}
+                    for k, v in pairs(entry) do
+                        table.insert(keys, k .. "[" .. type(v) .. "]" .. (type(v)=="number" and "="..v or ""))
+                    end
+                    print("[vehicle_health] Configs.Vehicle." .. vehicleType .. ": " .. table.concat(keys, ", "))
+                end
             end
         end
-        if bestModel then
-            return bestModel
-        end
     end
-
-    return workspace:FindFirstChild(localPlayer.Name)
+    return nil
 end
 
--- Helper to determine the top-level vehicle model from any part or seat
-local function findVehicleRoot(instance)
-    if not instance then
-        return nil
-    end
-
-    local current = instance
-    local lastModel = nil
-
-    while current and current ~= workspace and current ~= workspace:FindFirstChild("Live") do
-        if current:IsA("Model") then
-            local isPlayerModel = game.Players:GetPlayerFromCharacter(current) ~= nil
-                or current.Name == "Male"
-                or current:FindFirstChild("Male") ~= nil
-            if not isPlayerModel then
-                lastModel = current
+-- Try to infer the vehicle type from the model (best-effort)
+local function inferVehicleType(vehicle)
+    if not vehicle then return nil end
+    -- Look for a nearby Value/StringValue named "Type"/"VehicleType"/"Name" in the model
+    for _, d in ipairs(vehicle:GetDescendants()) do
+        if d:IsA("StringValue") then
+            local n = d.Name:lower()
+            if n == "type" or n == "vehicletype" or n == "prefab" or n == "name" then
+                local v = tostring(d.Value)
+                if v ~= "" and #v < 40 then return v end
             end
         end
-        current = current.Parent
     end
-
-    return lastModel
+    -- Structural guess
+    local wheels, ground, heli = 0, false, false
+    for _, d in ipairs(vehicle:GetDescendants()) do
+        local c = d:GetAttribute("Component")
+        if type(c) == "string" and (c:sub(1,1) == "F" or c:sub(1,1) == "R") then wheels = wheels + 1 end
+        if d:IsA("AudioEmitter") then
+            if d.Name == "Emitter_Ground" then ground = true end
+            if d.Name == "Emitter_Helicopter" then heli = true end
+        end
+    end
+    if ground and wheels >= 8 then return "Stryker" end
+    if heli then return "UH60" end
+    return nil
 end
 
--- Structural vehicle signature, based on the BRM5 dumps:
---   * wheels carry a string attribute "Component" starting with "F" or "R" (e.g. "F4.9-2.5", "R-4.93.2")
---   * ground vehicles have AudioEmitters named "Emitter_Ground"
---   * helicopters have an AudioEmitter named "Emitter_Helicopter"
--- Results are cached per model (weak keys). Positive results are permanent;
--- negative results expire after a few seconds so a model that is still loading gets rechecked.
+-- =========================================================
+-- Vehicle signature (unchanged from original)
+-- =========================================================
 local sigCache = setmetatable({}, { __mode = "k" })
 local NEGATIVE_TTL = 5
-
 local function getVehicleSignature(model)
     local cached = sigCache[model]
     if cached then
@@ -136,714 +246,194 @@ local function getVehicleSignature(model)
             return cached.wheels, cached.ground, cached.heli
         end
     end
-
     local wheels, ground, heli = 0, false, false
     for _, d in ipairs(model:GetDescendants()) do
         local c = d:GetAttribute("Component")
         if type(c) == "string" then
-            local first = c:sub(1, 1)
-            if first == "F" or first == "R" then
-                wheels = wheels + 1
-            end
+            local f = c:sub(1, 1)
+            if f == "F" or f == "R" then wheels = wheels + 1 end
         end
         if d:IsA("AudioEmitter") then
-            if d.Name == "Emitter_Ground" then
-                ground = true
-            elseif d.Name == "Emitter_Helicopter" then
-                heli = true
-            end
+            if d.Name == "Emitter_Ground" then ground = true
+            elseif d.Name == "Emitter_Helicopter" then heli = true end
         end
     end
-
     sigCache[model] = { wheels = wheels, ground = ground, heli = heli, t = os.clock() }
     return wheels, ground, heli
 end
 
--- Checks if a model looks like a vehicle (has seats, chassis, wheels, engine, or vehicle keywords)
 local function isLikelyVehicle(model)
-    if not model or not model:IsA("Model") then
-        return false
-    end
-
-    if model.Name == "Male" or game.Players:GetPlayerFromCharacter(model) ~= nil then
-        return false
-    end
-
-    -- The BRM5 character wrapper is also named "Model" but contains a "Male" child
-    if model:FindFirstChild("Male") then
-        return false
-    end
-
+    if not model or not model:IsA("Model") then return false end
+    if model.Name == "Male" or game.Players:GetPlayerFromCharacter(model) ~= nil then return false end
+    if model:FindFirstChild("Male") then return false end
     local name = model.Name:lower()
-    local keywords = {"stryker", "vehicle", "m1126", "heli", "blackhawk", "truck", "jeep", "tank", "btr", "boat", "plane", "uh-60", "ch-47", "mi-17"}
-    for _, kw in ipairs(keywords) do
-        if name:find(kw) then
-            return true
-        end
+    for _, kw in ipairs({"stryker","vehicle","m1126","heli","blackhawk","truck","jeep","tank","btr","boat","plane"}) do
+        if name:find(kw) then return true end
     end
-
-    if model:FindFirstChildOfClass("VehicleSeat") or model:FindFirstChildOfClass("Seat") then
-        return true
-    end
-
-    if model:FindFirstChild("Body") or model:FindFirstChild("Chassis") or model:FindFirstChild("Engine") or model:FindFirstChild("Seats") then
-        return true
-    end
-
-    for _, desc in ipairs(model:GetChildren()) do
-        if desc:IsA("VehicleSeat") or desc:IsA("Seat") then
-            return true
-        end
-        if desc.Name == "Seats" or desc.Name == "Chassis" or desc.Name == "Interior" or desc.Name == "DriveSeat" then
-            return true
-        end
-    end
-
-    -- Structural check for BRM5 vehicles (all named "Model")
+    if model:FindFirstChildOfClass("VehicleSeat") or model:FindFirstChildOfClass("Seat") then return true end
     local _, ground, heli = getVehicleSignature(model)
-    if ground or heli then
-        return true
-    end
-
-    return false
+    return ground or heli
 end
 
--- BRM5 keeps the vehicle you are driving inside its own client modules. Parvus hooks these modules:
--- MovementService._handler is the active Ground/Helicopter/Aircraft movement object, and _main is its main part.
--- This finds the occupied vehicle regardless of what the model is named. Needs executor getmodules().
-local cachedMovementService = nil
-local function getMovementService()
-    if cachedMovementService then
-        return cachedMovementService
+-- =========================================================
+-- Player vehicle detection — keep the structural fallback
+-- =========================================================
+local function getPlayerVehicle(localPlayer)
+    if VehicleHealth.selectedVehicle and VehicleHealth.selectedVehicle.Parent then
+        return VehicleHealth.selectedVehicle
     end
-    if type(getmodules) ~= "function" then
-        return nil
-    end
-    local okMods, mods = pcall(getmodules)
-    if not okMods or type(mods) ~= "table" then
-        return nil
-    end
-    for _, m in ipairs(mods) do
-        if m.Name == "MovementService" then
-            local okReq, svc = pcall(require, m)
-            if okReq and type(svc) == "table" then
-                cachedMovementService = svc
-                return svc
-            end
-        end
-    end
-    return nil
-end
-
-local function getMovementVehicle()
-    local svc = getMovementService()
-    if not svc then
-        return nil
-    end
-    local ok, result = pcall(function()
-        local handler = rawget(svc, "_handler")
-        local part = handler and (handler._main or handler._model)
-        if typeof(part) ~= "Instance" then
-            return nil
-        end
-        local top = part:IsA("Model") and part or part:FindFirstAncestorOfClass("Model")
-        while top and top.Parent and top.Parent:IsA("Model") do
-            top = top.Parent
-        end
-        if top and top.Name ~= "Male" and not top:FindFirstChild("Male") then
-            return top
-        end
-        return nil
-    end)
-    if ok then
-        return result
-    end
-    return nil
-end
-
--- Vehicle names taken from the BRM5 ReplicatedStorage vehicle configs and the Unsorted dump
-local KNOWN_VEHICLES = {
-    "fmtv", "vab", "m998", "humvee", "lmtv", "jeep", "ural", "srtv", "pvp", "cougar", "stryker",
-    "brdm", "tigr", "vbmr", "mi8", "uh60", "ch47", "ch53", "mh60", "nh90", "md500",
-    "btr70", "t72", "bmp2_body", "bmp2_turret",
-}
-
--- Props that live next to vehicles in Live.Unsorted and must never be listed
-local JUNK_NAMES = {
-    "wallight", "trilight", "overhead", "fence", "cabinet", "cone", "cart_", "hut", "tent",
-    "flagpole", "register", "umbrella", "sign", "light", "pole", "loader export", "barrel",
-}
-
-local function looksLikeGuid(name)
-    return name:match("^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$") ~= nil
-end
-
--- Strict filter: only real vehicles pass
-local function isVehicleCandidate(model)
-    local n = model.Name:lower()
-
-    if looksLikeGuid(n) then
-        -- GUID stubs are also used for elevators/flags, which carry a Prefab attribute
-        if model:GetAttribute("Prefab") ~= nil then
-            return false
-        end
-        return true
-    end
-
-    for _, junk in ipairs(JUNK_NAMES) do
-        if n:find(junk, 1, true) then
-            return false
-        end
-    end
-
-    for _, known in ipairs(KNOWN_VEHICLES) do
-        if n:find(known, 1, true) then
-            return true
-        end
-    end
-
-    return isLikelyVehicle(model)
-end
-
--- Scans the game and returns all available vehicles/models for the user to pick from
-function VehicleHealth:getAvailableVehicles()
-    local list = {}
-    local seen = {}
-
-    local function addCandidate(model, defaultTag, force)
-        if not model or not model:IsA("Model") or seen[model] then
-            return
-        end
-        if model.Name == "Male" or model:FindFirstChild("Male") or game.Players:GetPlayerFromCharacter(model) ~= nil then
-            return
-        end
-        if not force and not isVehicleCandidate(model) then
-            return
-        end
-        seen[model] = true
-
-        local n = model.Name:lower()
-        local priority = 10
-        local tag = defaultTag or "Vehicle"
-
-        -- Structural identification (works even though the model is just named "Model")
-        local wheels, ground, heli = getVehicleSignature(model)
-        if ground and wheels >= 8 then
-            priority = 1
-            tag = "⭐ STRYKER (8x8)"
-        elseif ground then
-            priority = 2
-            tag = "Ground vehicle (" .. wheels .. " wheels)"
-        elseif heli then
-            priority = 2
-            tag = "Helicopter"
-        end
-
-        -- Name-based identification (overrides the structural tag if the name matches)
-        if n:find("stryker") or n:find("m1126") or n:find("icv") then
-            priority = 1
-            tag = "⭐ STRYKER"
-        elseif n:find("blackhawk") or n:find("uh60") or n:find("uh-60") or n:find("chinook") or n:find("ch47") or n:find("ch-47") or n:find("littlebird") or n:find("cougar") or n:find("humvee") or n:find("hmmwv") then
-            priority = 2
-            tag = "US / Player Vehicle"
-        elseif n:find("btr") or n:find("t72") or n:find("bmp") or n:find("mi17") or n:find("mi-17") or n:find("mi24") or n:find("d30") or n:find("howitzer") then
-            priority = 5
-            tag = "Enemy Vehicle"
-        end
-
-        if force then
-            priority = 0
-            tag = "🚗 CURRENT | " .. tag
-        end
-
-        -- Generic "Model" names can't be searched, so expose the identified type in rawName too
-        local rawName = model.Name
-        if tag:find("STRYKER") and not n:find("stryker") then
-            rawName = "Stryker (" .. model.Name .. ")"
-        end
-
-        table.insert(list, {
-            instance = model,
-            rawName = rawName,
-            name = model.Name .. " [" .. tag .. "]",
-            priority = priority
-        })
-    end
-
-    local live = workspace:FindFirstChild("Live")
-    local unsorted = live and live:FindFirstChild("Unsorted")
-    local tech = live and live:FindFirstChild("Tech")
-
-    -- 0. The vehicle the game says you are in right now (MovementService)
-    local currentVehicle = getMovementVehicle()
-    if currentVehicle then
-        addCandidate(currentVehicle, "Vehicle", true)
-    end
-
-    -- 1. All models in workspace.Live.Unsorted (BRM5 vehicle folder)
-    if unsorted then
-        for _, obj in ipairs(unsorted:GetChildren()) do
-            if obj:IsA("Model") and obj.Name ~= "Male" then
-                addCandidate(obj, "Live")
-            end
-        end
-    end
-
-    if tech then
-        for _, obj in ipairs(tech:GetChildren()) do
-            if obj:IsA("Model") and obj.Name ~= "Male" then
-                addCandidate(obj, "Tech")
-            end
-        end
-    end
-
-    -- NOTE: ipairs stops at the first nil, and Workspace.Vehicles doesn't exist in BRM5,
-    -- so build the list without nil holes or `workspace` itself is never scanned.
-    local searchFolders = {}
-    local function addFolder(f)
-        if f then
-            table.insert(searchFolders, f)
-        end
-    end
-    addFolder(unsorted)
-    addFolder(tech)
-    addFolder(live)
-    addFolder(workspace:FindFirstChild("Vehicles"))
-    addFolder(workspace)
-
-    -- 2. Models that look like vehicles (keywords, seats, or the structural signature).
-    -- Spawned BRM5 vehicles are direct children of Workspace, so the `workspace` entry above catches them.
-    for _, folder in ipairs(searchFolders) do
-        if folder then
-            for _, obj in ipairs(folder:GetChildren()) do
-                if obj:IsA("Model") and isLikelyVehicle(obj) then
-                    addCandidate(obj, "Vehicle")
+    -- Scan workspace for any structural vehicle, prefer the one closest to camera
+    local cam = workspace.CurrentCamera
+    local camPos = cam and cam.CFrame.Position
+    local best, bestDist = nil, math.huge
+    for _, m in ipairs(workspace:GetChildren()) do
+        if m:IsA("Model") and m.Name ~= "Male" and not m:FindFirstChild("Male") then
+            local wheels, ground, heli = getVehicleSignature(m)
+            if ground or heli or wheels >= 4 then
+                if camPos then
+                    local ok, cfr = pcall(function() return m:GetPivot() end)
+                    if ok and cfr then
+                        local d = (cfr.Position - camPos).Magnitude
+                        if d < bestDist then bestDist = d; best = m end
+                    end
+                else
+                    best = best or m
                 end
             end
         end
     end
-
-    -- 3. Any descendant Model matching Stryker / Vehicle / Tank / Heli
-    for _, desc in ipairs(workspace:GetDescendants()) do
-        if desc:IsA("Model") and not seen[desc] and desc.Name ~= "Male" then
-            local n = desc.Name:lower()
-            if n:find("stryker") or n:find("m1126") or n:find("btr") or n:find("t72") or n:find("bmp") or n:find("vehicle") or n:find("heli") or n:find("truck") then
-                addCandidate(desc, "Keyword")
-            end
-        end
-    end
-
-    -- Sort so Stryker (priority 1) is always at the very top of the list
-    table.sort(list, function(a, b)
-        if a.priority ~= b.priority then
-            return a.priority < b.priority
-        end
-        return a.rawName < b.rawName
-    end)
-
-    -- DEBUG: remove once the Stryker shows up in the menu
-    print("[vehicle_health] getAvailableVehicles ran at " .. string.format("%.1f", os.clock()) .. " -> " .. #list .. " results")
-    for i = 1, math.min(#list, 6) do
-        print("  " .. i .. ". " .. list[i].name)
-    end
-    for _, m in ipairs(workspace:GetChildren()) do
-        if m:IsA("Model") and m.Name == "Model" and #m:GetDescendants() > 100 and not m:FindFirstChild("Male") then
-            local w, g, h = getVehicleSignature(m)
-            print("  [scan] Workspace.Model wheels=" .. w .. " ground=" .. tostring(g) .. " heli=" .. tostring(h)
-                .. " seen=" .. tostring(seen[m] == true) .. " candidate=" .. tostring(isVehicleCandidate(m)))
-        end
-    end
-
-    return list
+    return best
 end
 
--- Allows manual vehicle selection from GUI dropdown/list
-function VehicleHealth:selectVehicle(vehicle)
-    if not vehicle or not vehicle.Parent then
-        return false
-    end
+-- =========================================================
+-- bindHealthObjects — still useful if a vehicle has ValueBases
+-- =========================================================
+local function isHealthName(name)
+    local n = name:lower():gsub("[%s_%-]", "")
+    return n == "health" or n == "hp" or n == "vehiclehealth" or n == "curhealth"
+        or n == "hull" or n == "hullhealth" or n == "enginehealth" or n == "armor"
+        or n == "armour" or n == "durability"
+end
+local function isMaxHealthName(name)
+    local n = name:lower():gsub("[%s_%-]", "")
+    return n == "maxhealth" or n == "maxhp" or n == "fullhealth" or n == "maxhull"
+        or n == "maxhullhealth" or n == "maxengine" or n == "maxarmor"
+end
 
+function VehicleHealth:clearListeners()
+    for _, c in ipairs(self.connections) do pcall(function() c:Disconnect() end) end
+    self.connections = {}
+end
+
+function VehicleHealth:bindHealthObjects(vehicle)
+    self:clearListeners()
+    self.trackedValues = {}
+    if not vehicle then return false end
+    local detectedMax = nil
+    for _, d in ipairs(vehicle:GetDescendants()) do
+        if (d:IsA("NumberValue") or d:IsA("IntValue")) and isMaxHealthName(d.Name) and d.Value > 0 then
+            detectedMax = d.Value
+        end
+    end
+    for _, d in ipairs(vehicle:GetDescendants()) do
+        if (d:IsA("NumberValue") or d:IsA("IntValue")) and isHealthName(d.Name) then
+            local maxVal = detectedMax or (d.Value > 0 and d.Value or 1000)
+            table.insert(self.trackedValues, { instance = d, max = maxVal, current = d.Value })
+            local conn = d:GetPropertyChangedSignal("Value"):Connect(function()
+                if self.enabled and d.Value < maxVal then
+                    pcall(function() d.Value = maxVal end)
+                end
+            end)
+            table.insert(self.connections, conn)
+        end
+    end
+    return #self.trackedValues > 0
+end
+
+function VehicleHealth:selectVehicle(vehicle)
+    if not vehicle or not vehicle.Parent then return false end
     self.selectedVehicle = vehicle
     self.currentVehicle = vehicle
     self.vehicleName = vehicle.Name
     self:bindHealthObjects(vehicle)
-
-    if self.enabled then
-        self:heal()
-    end
-
     self.lastStatus = self.vehicleName .. " (Selected)"
     return true
 end
 
--- Attempts to find the vehicle model the player is in through multiple detection methods
-local function getPlayerVehicle(localPlayer)
-    -- If user manually picked a vehicle from the list, use that
-    if VehicleHealth.selectedVehicle and VehicleHealth.selectedVehicle.Parent then
-        return VehicleHealth.selectedVehicle
-    end
-
-    local camera = workspace.CurrentCamera
-
-    -- Method -1: ask the game's own MovementService (how Parvus finds the active vehicle)
-    local movementVehicle = getMovementVehicle()
-    if movementVehicle then
-        return movementVehicle
-    end
-
-    -- Method 0: Check Camera.CameraSubject (most reliable in Roblox vehicles)
-    if camera and camera.CameraSubject then
-        local subj = camera.CameraSubject
-        local veh = findVehicleRoot(subj)
-        if veh and isLikelyVehicle(veh) then
-            return veh
-        end
-        local subjModel = subj:FindFirstAncestorOfClass("Model")
-        if subjModel and isLikelyVehicle(subjModel) then
-            return subjModel
-        end
-    end
-
-    local character = getCharacter(localPlayer)
-    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-    local rootPart = character and (character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("Torso") or character:FindFirstChild("UpperTorso") or character:FindFirstChild("Root") or character:FindFirstChild("Head"))
-
-    -- Method 1: Humanoid.SitPart (Standard Roblox Seating)
-    if humanoid and humanoid.SitPart then
-        local veh = findVehicleRoot(humanoid.SitPart)
-        if veh then
-            return veh
-        end
-    end
-
-    -- Method 2: Check SeatPart alias if present
-    if humanoid then
-        local ok, seatPart = pcall(function() return humanoid.SeatPart end)
-        if ok and seatPart then
-            local veh = findVehicleRoot(seatPart)
-            if veh then
-                return veh
-            end
-        end
-    end
-
-    -- Method 3: Check Welds / WeldConstraints / Motor6Ds attached to character parts
-    if character then
-        for _, part in ipairs(character:GetChildren()) do
-            if part:IsA("BasePart") then
-                for _, child in ipairs(part:GetChildren()) do
-                    if child:IsA("Weld") or child:IsA("WeldConstraint") or child:IsA("Motor6D") then
-                        local other = (child.Part0 == part) and child.Part1 or child.Part0
-                        if other and other:IsDescendantOf(workspace) and not other:IsDescendantOf(character) then
-                            local veh = findVehicleRoot(other)
-                            if veh and isLikelyVehicle(veh) then
-                                return veh
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-
-    -- Method 4: Scan workspace seats for Occupant == humanoid
-    if humanoid then
-        local function checkSeatsInFolder(folder)
-            if not folder then return nil end
-            for _, obj in ipairs(folder:GetChildren()) do
-                if obj:IsA("Model") and isLikelyVehicle(obj) then
-                    for _, desc in ipairs(obj:GetDescendants()) do
-                        if (desc:IsA("Seat") or desc:IsA("VehicleSeat")) and desc.Occupant == humanoid then
-                            return obj
-                        end
-                    end
-                end
-            end
-            return nil
-        end
-
-        local seatOccupantVeh = checkSeatsInFolder(workspace:FindFirstChild("Live")) or checkSeatsInFolder(workspace)
-        if seatOccupantVeh then
-            return seatOccupantVeh
-        end
-    end
-
-    -- Method 5: Proximity / Bounding Box Check from Character or Camera
-    local checkPos = rootPart and rootPart.Position or (camera and camera.CFrame.Position)
-    if checkPos then
-        local function checkProximityInFolder(folder)
-            if not folder then return nil end
-            local bestVeh = nil
-            local bestDist = 18
-            for _, obj in ipairs(folder:GetChildren()) do
-                if obj:IsA("Model") and isLikelyVehicle(obj) then
-                    local ok, cframe, size = pcall(function() return obj:GetBoundingBox() end)
-                    if ok and cframe and size then
-                        local relPos = cframe:PointToObjectSpace(checkPos)
-                        local halfSize = size / 2 + Vector3.new(4, 6, 4)
-                        if math.abs(relPos.X) <= halfSize.X and math.abs(relPos.Y) <= halfSize.Y and math.abs(relPos.Z) <= halfSize.Z then
-                            return obj
-                        end
-                        local centerDist = (cframe.Position - checkPos).Magnitude
-                        if centerDist < bestDist then
-                            bestDist = centerDist
-                            bestVeh = obj
-                        end
-                    end
-                end
-            end
-            return bestVeh
-        end
-
-        local proxVeh = checkProximityInFolder(workspace:FindFirstChild("Live")) or checkProximityInFolder(workspace)
-        if proxVeh then
-            return proxVeh
-        end
-    end
-
-    return nil
-end
-
--- Checks if a name indicates vehicle health
-local function isHealthName(name)
-    local n = name:lower():gsub("[%s_%-]", "")
-    return n == "health"
-        or n == "hp"
-        or n == "vehiclehealth"
-        or n == "curhealth"
-        or n == "currenthealth"
-        or n == "hull"
-        or n == "hullhealth"
-        or n == "enginehealth"
-        or n == "armor"
-        or n == "armour"
-        or n == "durability"
-end
-
--- Checks if a name indicates max health
-local function isMaxHealthName(name)
-    local n = name:lower():gsub("[%s_%-]", "")
-    return n == "maxhealth"
-        or n == "maxhp"
-        or n == "fullhealth"
-        or n == "maxhull"
-        or n == "maxhullhealth"
-        or n == "maxengine"
-        or n == "maxarmor"
-end
-
--- Clears active listeners
-function VehicleHealth:clearListeners()
-    for _, conn in ipairs(self.connections) do
-        pcall(function() conn:Disconnect() end)
-    end
-    self.connections = {}
-end
-
--- Finds all health components (Attributes, ValueBases, Humanoid) within the vehicle
-function VehicleHealth:bindHealthObjects(vehicle)
-    self:clearListeners()
-    self.trackedValues = {}
-
-    local detectedMax = nil
-
-    -- 1. Scan attributes on the vehicle model itself
-    local attrs = vehicle:GetAttributes()
-    for attrName, attrValue in pairs(attrs) do
-        if type(attrValue) == "number" then
-            if isMaxHealthName(attrName) then
-                detectedMax = attrValue
-            end
-        end
-    end
-
-    for attrName, attrValue in pairs(attrs) do
-        if type(attrValue) == "number" and isHealthName(attrName) then
-            local maxVal = detectedMax or (attrValue > 0 and attrValue or 1000)
-            table.insert(self.trackedValues, {
-                isAttribute = true,
-                attrName = attrName,
-                instance = vehicle,
-                max = maxVal,
-                current = attrValue
-            })
-
-            -- Hook attribute change for instant healing
-            local conn = vehicle:GetAttributeChangedSignal(attrName):Connect(function()
-                if self.enabled then
-                    local cur = vehicle:GetAttribute(attrName)
-                    if type(cur) == "number" and cur < maxVal then
-                        pcall(function() vehicle:SetAttribute(attrName, maxVal) end)
-                    end
-                end
-            end)
-            table.insert(self.connections, conn)
-        end
-    end
-
-    -- 2. Scan ValueBase descendants (Health, HP, Hull, Armor, Engine, etc.)
-    -- First pass: find any explicit max health values
-    for _, desc in ipairs(vehicle:GetDescendants()) do
-        if desc:IsA("NumberValue") or desc:IsA("IntValue") or desc:IsA("DoubleConstrainedValue") then
-            if isMaxHealthName(desc.Name) and desc.Value > 0 then
-                detectedMax = desc.Value
-            end
-        end
-    end
-
-    -- Second pass: track all health-related values
-    for _, desc in ipairs(vehicle:GetDescendants()) do
-        if desc:IsA("NumberValue") or desc:IsA("IntValue") or desc:IsA("DoubleConstrainedValue") then
-            if isHealthName(desc.Name) then
-                local maxVal = detectedMax or (desc.Value > 0 and desc.Value or 1000)
-                table.insert(self.trackedValues, {
-                    isAttribute = false,
-                    instance = desc,
-                    max = maxVal,
-                    current = desc.Value
+function VehicleHealth:getAvailableVehicles()
+    local list, seen = {}, {}
+    for _, m in ipairs(workspace:GetChildren()) do
+        if m:IsA("Model") and not seen[m] and m.Name ~= "Male" and not m:FindFirstChild("Male") then
+            local wheels, ground, heli = getVehicleSignature(m)
+            if ground or heli or wheels >= 4 then
+                seen[m] = true
+                local tag = "Vehicle"
+                local priority = 10
+                if ground and wheels >= 8 then tag = "⭐ STRYKER (8x8)"; priority = 1
+                elseif ground then tag = "Ground (" .. wheels .. " wheels)"; priority = 2
+                elseif heli then tag = "Helicopter"; priority = 2 end
+                table.insert(list, {
+                    instance = m,
+                    rawName = m.Name,
+                    name = m.Name .. " [" .. tag .. "]",
+                    priority = priority,
                 })
-
-                -- Hook property change for immediate 0-delay restoration
-                local conn = desc:GetPropertyChangedSignal("Value"):Connect(function()
-                    if self.enabled and desc.Value < maxVal then
-                        pcall(function() desc.Value = maxVal end)
-                    end
-                end)
-                table.insert(self.connections, conn)
             end
         end
     end
-
-    -- 3. Check for Humanoid inside vehicle (some vehicle systems use a Humanoid for health)
-    for _, desc in ipairs(vehicle:GetDescendants()) do
-        if desc:IsA("Humanoid") and desc.Parent ~= vehicle:FindFirstAncestorOfClass("Model") then
-            local maxVal = desc.MaxHealth > 0 and desc.MaxHealth or 1000
-            table.insert(self.trackedValues, {
-                isHumanoid = true,
-                instance = desc,
-                max = maxVal,
-                current = desc.Health
-            })
-
-            local conn = desc:GetPropertyChangedSignal("Health"):Connect(function()
-                if self.enabled and desc.Health < desc.MaxHealth then
-                    pcall(function() desc.Health = desc.MaxHealth end)
-                end
-            end)
-            table.insert(self.connections, conn)
-        end
-    end
-
-    return #self.trackedValues > 0
+    table.sort(list, function(a,b) return a.priority < b.priority end)
+    return list
 end
 
--- Scans the vehicle the player is currently in and caches health references
-function VehicleHealth:scanVehicle(localPlayer)
-    local vehicle = getPlayerVehicle(localPlayer)
-    if not vehicle then
-        self:cleanup()
-        self.lastStatus = "No vehicle detected"
-        return false
-    end
-
-    if vehicle == self.currentVehicle and #self.trackedValues > 0 then
-        return true -- Already actively protecting this vehicle
-    end
-
-    self.currentVehicle = vehicle
-    self.vehicleName = vehicle.Name
-
-    local hasHealth = self:bindHealthObjects(vehicle)
-    if hasHealth then
-        self.lastStatus = self.vehicleName .. " | Protected"
-        return true
-    else
-        -- Vehicle detected, but no explicit health values found (still protect wheels/seats)
-        self.lastStatus = self.vehicleName .. " (No HP bar - Active)"
-        return true
-    end
-end
-
--- The core heal loop: resets all tracked health objects to max
-function VehicleHealth:heal()
-    if not self.enabled or not self.currentVehicle then
-        return
-    end
-
-    for _, entry in ipairs(self.trackedValues) do
-        pcall(function()
-            if entry.isAttribute then
-                local cur = entry.instance:GetAttribute(entry.attrName)
-                entry.current = cur
-                if type(cur) == "number" and cur < entry.max then
-                    entry.instance:SetAttribute(entry.attrName, entry.max)
-                end
-            elseif entry.isHumanoid then
-                entry.current = entry.instance.Health
-                if entry.instance.Health < entry.instance.MaxHealth then
-                    entry.instance.Health = entry.instance.MaxHealth
-                end
-            elseif entry.instance and entry.instance.Parent then
-                entry.current = entry.instance.Value
-                if entry.instance.Value < entry.max then
-                    entry.instance.Value = entry.max
-                end
-            end
-        end)
-    end
-end
-
--- ===== On-screen health HUD (works with the menu closed) =====
+-- =========================================================
+-- HUD
+-- =========================================================
 local HUD_TOGGLE_KEY = Enum.KeyCode.End
 
--- Friendly name for the HUD, since spawned vehicles are just called "Model"
 local function getDisplayName(vehicle)
     local wheels, ground, heli = getVehicleSignature(vehicle)
-    if ground and wheels >= 8 then
-        return "Stryker (8x8)"
-    elseif ground then
-        return "Ground vehicle (" .. wheels .. " wheels)"
-    elseif heli then
-        return "Helicopter"
-    end
+    if ground and wheels >= 8 then return "Stryker (8x8)"
+    elseif ground then return "Ground vehicle (" .. wheels .. " wheels)"
+    elseif heli then return "Helicopter" end
     return vehicle.Name
 end
 
--- Health fields kept on the game's active movement handler, if any (name contains "health"/"hp")
-local function getHandlerHealth()
-    local svc = getMovementService()
-    if not svc then
-        return nil, nil
-    end
-    local ok, cur, max = pcall(function()
-        local handler = rawget(svc, "_handler")
-        if type(handler) ~= "table" then
-            return nil, nil
+-- Returns cur, max, source-string
+local function readHP(vehicle)
+    -- 1) live remote-sniffed value
+    if hpState.current and (os.clock() - hpState.last_update) < 5 then
+        local cur = hpState.current
+        local max = hpState.max
+        -- If the table_ref is still alive, read the live value again
+        if hpState.table_ref and hpState.field then
+            local ok, v = pcall(function() return hpState.table_ref[hpState.field] end)
+            if ok and type(v) == "number" then cur = v end
         end
-        local c, m
-        for k, v in pairs(handler) do
-            if type(k) == "string" and type(v) == "number" then
-                local n = k:lower():gsub("[%s_%-]", "")
-                if n:find("maxhealth") or n == "maxhp" then
-                    m = v
-                elseif n:find("health") or n == "hp" then
-                    c = v
-                end
-            end
+        if not max and vehicle then
+            local inferred = inferVehicleType(vehicle)
+            if inferred then max = getConfigMaxHP(inferred) end
         end
-        return c, m
-    end)
-    if ok then
-        return cur, max
+        return cur, max, "remote"
     end
-    return nil, nil
+    -- 2) fall back to any ValueBase we tracked
+    local primary = VehicleHealth.trackedValues[1]
+    if primary then
+        local ok, v = pcall(function() return primary.instance.Value end)
+        if ok and type(v) == "number" then return v, primary.max, "value" end
+    end
+    -- 3) fall back to config max only (no live reading possible)
+    if vehicle then
+        local inferred = inferVehicleType(vehicle)
+        if inferred then
+            local m = getConfigMaxHP(inferred)
+            if m then return nil, m, "config" end
+        end
+    end
+    return nil, nil, "none"
 end
 
 function VehicleHealth:createHUD()
-    if self.hudGui and self.hudGui.Parent then
-        return
-    end
-
+    if self.hudGui and self.hudGui.Parent then return end
     local gui = Instance.new("ScreenGui")
     gui.Name = "VehicleHealthHUD"
     gui.ResetOnSpawn = false
@@ -851,8 +441,7 @@ function VehicleHealth:createHUD()
     gui.DisplayOrder = 999
 
     local label = Instance.new("TextLabel")
-    label.Name = "Readout"
-    label.Size = UDim2.new(0, 280, 0, 60)
+    label.Size = UDim2.new(0, 300, 0, 78)
     label.Position = UDim2.new(0, 16, 0, 140)
     label.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
     label.BackgroundTransparency = 0.35
@@ -864,24 +453,18 @@ function VehicleHealth:createHUD()
     label.TextSize = 15
     label.Text = "Vehicle HUD"
     label.Parent = gui
-
-    local padding = Instance.new("UIPadding")
-    padding.PaddingLeft = UDim.new(0, 8)
-    padding.PaddingTop = UDim.new(0, 6)
-    padding.Parent = label
+    local pad = Instance.new("UIPadding")
+    pad.PaddingLeft = UDim.new(0, 8)
+    pad.PaddingTop = UDim.new(0, 6)
+    pad.Parent = label
 
     pcall(function()
-        if type(gethui) == "function" then
-            gui.Parent = gethui()
-        else
-            gui.Parent = game:GetService("CoreGui")
-        end
+        if type(gethui) == "function" then gui.Parent = gethui()
+        else gui.Parent = game:GetService("CoreGui") end
     end)
     if not gui.Parent then
         local lp = game.Players.LocalPlayer
-        if lp and lp:FindFirstChildOfClass("PlayerGui") then
-            gui.Parent = lp:FindFirstChildOfClass("PlayerGui")
-        end
+        if lp and lp:FindFirstChildOfClass("PlayerGui") then gui.Parent = lp:FindFirstChildOfClass("PlayerGui") end
     end
 
     self.hudGui = gui
@@ -891,154 +474,116 @@ function VehicleHealth:createHUD()
         self.hudConn = game:GetService("UserInputService").InputBegan:Connect(function(input, processed)
             if not processed and input.KeyCode == HUD_TOGGLE_KEY then
                 self.hudEnabled = not self.hudEnabled
-                if self.hudGui then
-                    self.hudGui.Enabled = self.hudEnabled
-                end
+                if self.hudGui then self.hudGui.Enabled = self.hudEnabled end
             end
         end)
     end
 end
 
 function VehicleHealth:destroyHUD()
-    if self.hudConn then
-        pcall(function() self.hudConn:Disconnect() end)
-        self.hudConn = nil
-    end
-    if self.hudGui then
-        pcall(function() self.hudGui:Destroy() end)
-    end
-    self.hudGui = nil
-    self.hudLabel = nil
-    self.hudVehicle = nil
+    if self.hudConn then pcall(function() self.hudConn:Disconnect() end); self.hudConn = nil end
+    if self.hudGui then pcall(function() self.hudGui:Destroy() end) end
+    self.hudGui, self.hudLabel, self.hudVehicle = nil, nil, nil
 end
 
 function VehicleHealth:updateHUD(localPlayer)
     if not self.hudEnabled then
-        if self.hudGui then
-            self.hudGui.Enabled = false
-        end
+        if self.hudGui then self.hudGui.Enabled = false end
         return
     end
-
     local now = os.clock()
-    if now - self.hudLast < 0.25 then
-        return
-    end
+    if now - self.hudLast < 0.2 then return end
     self.hudLast = now
 
     self:createHUD()
-    if not self.hudLabel then
-        return
-    end
+    if not self.hudLabel then return end
     self.hudGui.Enabled = true
 
     local vehicle = getPlayerVehicle(localPlayer)
     if not vehicle or not vehicle.Parent then
         self.hudVehicle = nil
-        self.hudLabel.Text = "VEHICLE: none\nGOD: " .. (self.enabled and "ON" or "OFF")
+        self.hudLabel.Text = "VEHICLE: none\nHP: -\nGOD: " .. (self.enabled and "ON" or "OFF")
         self.hudLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
         return
     end
 
-    -- Re-bind health objects whenever the vehicle changes (only heals while god mode is on)
     if vehicle ~= self.hudVehicle then
         self.hudVehicle = vehicle
-        if vehicle ~= self.currentVehicle then
-            pcall(function() self:bindHealthObjects(vehicle) end)
-        end
+        pcall(function() self:bindHealthObjects(vehicle) end)
     end
 
-    local cur, max
-    local primary = self.trackedValues[1]
-    if primary then
-        pcall(function()
-            if primary.isAttribute then
-                cur = primary.instance:GetAttribute(primary.attrName)
-            elseif primary.isHumanoid then
-                cur = primary.instance.Health
-            else
-                cur = primary.instance.Value
-            end
-            max = primary.max
-        end)
-    end
-    if type(cur) ~= "number" then
-        cur, max = getHandlerHealth()
-    end
-
-    local line2
-    local color = Color3.fromRGB(255, 255, 255)
+    local cur, max, source = readHP(vehicle)
+    local line2, color
     if type(cur) == "number" then
         max = (type(max) == "number" and max > 0) and max or cur
         local pct = math.clamp(cur / max, 0, 1)
-        line2 = string.format("HP: %d / %d (%d%%)", math.floor(cur), math.floor(max), math.floor(pct * 100))
-        if pct > 0.6 then
-            color = Color3.fromRGB(90, 255, 120)
-        elseif pct > 0.3 then
-            color = Color3.fromRGB(255, 220, 80)
-        else
-            color = Color3.fromRGB(255, 90, 90)
-        end
+        line2 = string.format("HP: %d / %d (%d%%) [%s]", math.floor(cur), math.floor(max), math.floor(pct*100), source)
+        if pct > 0.6 then color = Color3.fromRGB(90, 255, 120)
+        elseif pct > 0.3 then color = Color3.fromRGB(255, 220, 80)
+        else color = Color3.fromRGB(255, 90, 90) end
+    elseif type(max) == "number" then
+        line2 = string.format("HP: -- / %d (waiting) [%s]", math.floor(max), source)
+        color = Color3.fromRGB(200, 200, 200)
     else
-        line2 = "HP: no readable value found"
+        line2 = "HP: waiting for remote data..."
         color = Color3.fromRGB(255, 180, 120)
     end
 
     self.hudLabel.Text = "VEHICLE: " .. getDisplayName(vehicle) .. "\n" .. line2 .. "\nGOD: " .. (self.enabled and "ON" or "OFF")
-    self.hudLabel.Size = UDim2.new(0, 280, 0, 78)
     self.hudLabel.TextColor3 = color
 end
 
--- Update function called every frame from the main heartbeat loop
-function VehicleHealth:update(localPlayer)
-    pcall(function() self:updateHUD(localPlayer) end)
-
-    if not self.enabled then
-        return
-    end
-
-    if not self.currentVehicle or not self.currentVehicle.Parent then
-        self:scanVehicle(localPlayer)
-    else
-        -- Verify player is still in the same vehicle
-        local currentVeh = getPlayerVehicle(localPlayer)
-        if currentVeh ~= self.currentVehicle then
-            self:scanVehicle(localPlayer)
-        end
-    end
-
-    self:heal()
-end
-
--- Returns a formatted status string for the GUI
-function VehicleHealth:getStatus()
-    if not self.enabled then
-        return "Disabled"
-    end
-
-    if not self.currentVehicle then
-        return "No vehicle detected (Sit in vehicle)"
-    end
-
-    if #self.trackedValues > 0 then
-        local primary = self.trackedValues[1]
-        local cur = "?"
+-- =========================================================
+-- HEAL — remote + ValueBases
+-- =========================================================
+function VehicleHealth:heal()
+    -- ValueBase healing
+    for _, entry in ipairs(self.trackedValues) do
         pcall(function()
-            if primary.isAttribute then
-                cur = tostring(math.floor(primary.instance:GetAttribute(primary.attrName)))
-            elseif primary.isHumanoid then
-                cur = tostring(math.floor(primary.instance.Health))
-            else
-                cur = tostring(math.floor(primary.instance.Value))
+            if entry.instance and entry.instance.Parent then
+                if entry.instance.Value < entry.max then
+                    entry.instance.Value = entry.max
+                end
             end
         end)
-        return self.vehicleName .. " | HP: " .. cur .. "/" .. tostring(math.floor(primary.max))
     end
-
-    return self.vehicleName .. " | Locked & Active"
+    -- Remote payload healing
+    if hpState.table_ref and hpState.field and hpState.max then
+        pcall(function()
+            local cur = hpState.table_ref[hpState.field]
+            if type(cur) == "number" and cur < hpState.max then
+                hpState.table_ref[hpState.field] = hpState.max
+            end
+        end)
+    end
 end
 
--- Full cleanup of references and signals
+-- =========================================================
+-- UPDATE (called from Heartbeat in the main script)
+-- =========================================================
+function VehicleHealth:update(localPlayer)
+    if self.enabled then
+        local veh = getPlayerVehicle(localPlayer)
+        if veh then
+            self.currentVehicle = veh
+            self.vehicleName = veh.Name
+            self:heal()
+        end
+    end
+    pcall(function() self:updateHUD(localPlayer) end)
+end
+
+function VehicleHealth:getStatus()
+    if not self.enabled then return "Disabled" end
+    local vehicle = self.currentVehicle
+    if not vehicle then return "No vehicle detected" end
+    local cur, max = readHP(vehicle)
+    if type(cur) == "number" then
+        return string.format("%s | HP: %d/%s", self.vehicleName or "?", math.floor(cur), max and math.floor(max) or "?")
+    end
+    return (self.vehicleName or "?") .. " | waiting for remote"
+end
+
 function VehicleHealth:cleanup()
     self:clearListeners()
     self.currentVehicle = nil
