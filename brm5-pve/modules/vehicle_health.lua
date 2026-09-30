@@ -1,12 +1,15 @@
 -- Vehicle Health Module
 -- Reads the vehicle the player is in, protects it from damage, and prevents explosions
 -- Handles multiple vehicle architectures (Roblox Seats, welded mounts, Attributes, ValueBases, Humanoids, sub-components)
+-- BRM5 note: spawned vehicles are parented to Workspace and are all named just "Model",
+-- so they are identified by structure (wheel "Component" attributes + Emitter_Ground / Emitter_Helicopter)
 
 local VehicleHealth = {}
 
 VehicleHealth.enabled = false
 VehicleHealth.currentVehicle = nil
 VehicleHealth.vehicleName = nil
+VehicleHealth.selectedVehicle = nil
 VehicleHealth.trackedValues = {} -- Array of { obj = Instance, max = number, isAttribute = bool, attrName = string }
 VehicleHealth.connections = {}
 VehicleHealth.lastStatus = "Disabled"
@@ -97,7 +100,9 @@ local function findVehicleRoot(instance)
 
     while current and current ~= workspace and current ~= workspace:FindFirstChild("Live") do
         if current:IsA("Model") then
-            local isPlayerModel = game.Players:GetPlayerFromCharacter(current) ~= nil or current.Name == "Male"
+            local isPlayerModel = game.Players:GetPlayerFromCharacter(current) ~= nil
+                or current.Name == "Male"
+                or current:FindFirstChild("Male") ~= nil
             if not isPlayerModel then
                 lastModel = current
             end
@@ -108,6 +113,45 @@ local function findVehicleRoot(instance)
     return lastModel
 end
 
+-- Structural vehicle signature, based on the BRM5 dumps:
+--   * wheels carry a string attribute "Component" starting with "F" or "R" (e.g. "F4.9-2.5", "R-4.93.2")
+--   * ground vehicles have AudioEmitters named "Emitter_Ground"
+--   * helicopters have an AudioEmitter named "Emitter_Helicopter"
+-- Results are cached per model (weak keys). Positive results are permanent;
+-- negative results expire after a few seconds so a model that is still loading gets rechecked.
+local sigCache = setmetatable({}, { __mode = "k" })
+local NEGATIVE_TTL = 5
+
+local function getVehicleSignature(model)
+    local cached = sigCache[model]
+    if cached then
+        if cached.ground or cached.heli or (os.clock() - cached.t) < NEGATIVE_TTL then
+            return cached.wheels, cached.ground, cached.heli
+        end
+    end
+
+    local wheels, ground, heli = 0, false, false
+    for _, d in ipairs(model:GetDescendants()) do
+        local c = d:GetAttribute("Component")
+        if type(c) == "string" then
+            local first = c:sub(1, 1)
+            if first == "F" or first == "R" then
+                wheels = wheels + 1
+            end
+        end
+        if d:IsA("AudioEmitter") then
+            if d.Name == "Emitter_Ground" then
+                ground = true
+            elseif d.Name == "Emitter_Helicopter" then
+                heli = true
+            end
+        end
+    end
+
+    sigCache[model] = { wheels = wheels, ground = ground, heli = heli, t = os.clock() }
+    return wheels, ground, heli
+end
+
 -- Checks if a model looks like a vehicle (has seats, chassis, wheels, engine, or vehicle keywords)
 local function isLikelyVehicle(model)
     if not model or not model:IsA("Model") then
@@ -115,6 +159,11 @@ local function isLikelyVehicle(model)
     end
 
     if model.Name == "Male" or game.Players:GetPlayerFromCharacter(model) ~= nil then
+        return false
+    end
+
+    -- The BRM5 character wrapper is also named "Model" but contains a "Male" child
+    if model:FindFirstChild("Male") then
         return false
     end
 
@@ -143,6 +192,12 @@ local function isLikelyVehicle(model)
         end
     end
 
+    -- Structural check for BRM5 vehicles (all named "Model")
+    local _, ground, heli = getVehicleSignature(model)
+    if ground or heli then
+        return true
+    end
+
     return false
 end
 
@@ -155,7 +210,7 @@ function VehicleHealth:getAvailableVehicles()
         if not model or not model:IsA("Model") or seen[model] then
             return
         end
-        if model.Name == "Male" or game.Players:GetPlayerFromCharacter(model) ~= nil then
+        if model.Name == "Male" or model:FindFirstChild("Male") or game.Players:GetPlayerFromCharacter(model) ~= nil then
             return
         end
         seen[model] = true
@@ -164,6 +219,20 @@ function VehicleHealth:getAvailableVehicles()
         local priority = 10
         local tag = defaultTag or "Vehicle"
 
+        -- Structural identification (works even though the model is just named "Model")
+        local wheels, ground, heli = getVehicleSignature(model)
+        if ground and wheels >= 8 then
+            priority = 1
+            tag = "⭐ STRYKER (8x8)"
+        elseif ground then
+            priority = 2
+            tag = "Ground vehicle (" .. wheels .. " wheels)"
+        elseif heli then
+            priority = 2
+            tag = "Helicopter"
+        end
+
+        -- Name-based identification (overrides the structural tag if the name matches)
         if n:find("stryker") or n:find("m1126") or n:find("icv") then
             priority = 1
             tag = "⭐ STRYKER"
@@ -212,7 +281,8 @@ function VehicleHealth:getAvailableVehicles()
         workspace
     }
 
-    -- 2. Models with vehicle keywords (Stryker, M1126, Heli, BTR, Tank, etc.)
+    -- 2. Models that look like vehicles (keywords, seats, or the structural signature).
+    -- Spawned BRM5 vehicles are direct children of Workspace, so the `workspace` entry above catches them.
     for _, folder in ipairs(searchFolders) do
         if folder then
             for _, obj in ipairs(folder:GetChildren()) do
