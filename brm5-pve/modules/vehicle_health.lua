@@ -14,6 +14,12 @@ VehicleHealth.selectedVehicle = nil
 VehicleHealth.trackedValues = {} -- Array of { obj = Instance, max = number, isAttribute = bool, attrName = string }
 VehicleHealth.connections = {}
 VehicleHealth.lastStatus = "Disabled"
+VehicleHealth.hudEnabled = true -- on-screen health readout, independent of the menu (toggle with End)
+VehicleHealth.hudGui = nil
+VehicleHealth.hudLabel = nil
+VehicleHealth.hudConn = nil
+VehicleHealth.hudVehicle = nil
+VehicleHealth.hudLast = 0
 
 -- Helper to find the actual player character
 local function getCharacter(localPlayer)
@@ -787,8 +793,206 @@ function VehicleHealth:heal()
     end
 end
 
+-- ===== On-screen health HUD (works with the menu closed) =====
+local HUD_TOGGLE_KEY = Enum.KeyCode.End
+
+-- Friendly name for the HUD, since spawned vehicles are just called "Model"
+local function getDisplayName(vehicle)
+    local wheels, ground, heli = getVehicleSignature(vehicle)
+    if ground and wheels >= 8 then
+        return "Stryker (8x8)"
+    elseif ground then
+        return "Ground vehicle (" .. wheels .. " wheels)"
+    elseif heli then
+        return "Helicopter"
+    end
+    return vehicle.Name
+end
+
+-- Health fields kept on the game's active movement handler, if any (name contains "health"/"hp")
+local function getHandlerHealth()
+    local svc = getMovementService()
+    if not svc then
+        return nil, nil
+    end
+    local ok, cur, max = pcall(function()
+        local handler = rawget(svc, "_handler")
+        if type(handler) ~= "table" then
+            return nil, nil
+        end
+        local c, m
+        for k, v in pairs(handler) do
+            if type(k) == "string" and type(v) == "number" then
+                local n = k:lower():gsub("[%s_%-]", "")
+                if n:find("maxhealth") or n == "maxhp" then
+                    m = v
+                elseif n:find("health") or n == "hp" then
+                    c = v
+                end
+            end
+        end
+        return c, m
+    end)
+    if ok then
+        return cur, max
+    end
+    return nil, nil
+end
+
+function VehicleHealth:createHUD()
+    if self.hudGui and self.hudGui.Parent then
+        return
+    end
+
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "VehicleHealthHUD"
+    gui.ResetOnSpawn = false
+    gui.IgnoreGuiInset = true
+    gui.DisplayOrder = 999
+
+    local label = Instance.new("TextLabel")
+    label.Name = "Readout"
+    label.Size = UDim2.new(0, 280, 0, 60)
+    label.Position = UDim2.new(0, 16, 0, 140)
+    label.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
+    label.BackgroundTransparency = 0.35
+    label.BorderSizePixel = 0
+    label.TextColor3 = Color3.fromRGB(255, 255, 255)
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.TextYAlignment = Enum.TextYAlignment.Top
+    label.Font = Enum.Font.Code
+    label.TextSize = 15
+    label.Text = "Vehicle HUD"
+    label.Parent = gui
+
+    local padding = Instance.new("UIPadding")
+    padding.PaddingLeft = UDim.new(0, 8)
+    padding.PaddingTop = UDim.new(0, 6)
+    padding.Parent = label
+
+    pcall(function()
+        if type(gethui) == "function" then
+            gui.Parent = gethui()
+        else
+            gui.Parent = game:GetService("CoreGui")
+        end
+    end)
+    if not gui.Parent then
+        local lp = game.Players.LocalPlayer
+        if lp and lp:FindFirstChildOfClass("PlayerGui") then
+            gui.Parent = lp:FindFirstChildOfClass("PlayerGui")
+        end
+    end
+
+    self.hudGui = gui
+    self.hudLabel = label
+
+    if not self.hudConn then
+        self.hudConn = game:GetService("UserInputService").InputBegan:Connect(function(input, processed)
+            if not processed and input.KeyCode == HUD_TOGGLE_KEY then
+                self.hudEnabled = not self.hudEnabled
+                if self.hudGui then
+                    self.hudGui.Enabled = self.hudEnabled
+                end
+            end
+        end)
+    end
+end
+
+function VehicleHealth:destroyHUD()
+    if self.hudConn then
+        pcall(function() self.hudConn:Disconnect() end)
+        self.hudConn = nil
+    end
+    if self.hudGui then
+        pcall(function() self.hudGui:Destroy() end)
+    end
+    self.hudGui = nil
+    self.hudLabel = nil
+    self.hudVehicle = nil
+end
+
+function VehicleHealth:updateHUD(localPlayer)
+    if not self.hudEnabled then
+        if self.hudGui then
+            self.hudGui.Enabled = false
+        end
+        return
+    end
+
+    local now = os.clock()
+    if now - self.hudLast < 0.25 then
+        return
+    end
+    self.hudLast = now
+
+    self:createHUD()
+    if not self.hudLabel then
+        return
+    end
+    self.hudGui.Enabled = true
+
+    local vehicle = getPlayerVehicle(localPlayer)
+    if not vehicle or not vehicle.Parent then
+        self.hudVehicle = nil
+        self.hudLabel.Text = "VEHICLE: none\nGOD: " .. (self.enabled and "ON" or "OFF")
+        self.hudLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+        return
+    end
+
+    -- Re-bind health objects whenever the vehicle changes (only heals while god mode is on)
+    if vehicle ~= self.hudVehicle then
+        self.hudVehicle = vehicle
+        if vehicle ~= self.currentVehicle then
+            pcall(function() self:bindHealthObjects(vehicle) end)
+        end
+    end
+
+    local cur, max
+    local primary = self.trackedValues[1]
+    if primary then
+        pcall(function()
+            if primary.isAttribute then
+                cur = primary.instance:GetAttribute(primary.attrName)
+            elseif primary.isHumanoid then
+                cur = primary.instance.Health
+            else
+                cur = primary.instance.Value
+            end
+            max = primary.max
+        end)
+    end
+    if type(cur) ~= "number" then
+        cur, max = getHandlerHealth()
+    end
+
+    local line2
+    local color = Color3.fromRGB(255, 255, 255)
+    if type(cur) == "number" then
+        max = (type(max) == "number" and max > 0) and max or cur
+        local pct = math.clamp(cur / max, 0, 1)
+        line2 = string.format("HP: %d / %d (%d%%)", math.floor(cur), math.floor(max), math.floor(pct * 100))
+        if pct > 0.6 then
+            color = Color3.fromRGB(90, 255, 120)
+        elseif pct > 0.3 then
+            color = Color3.fromRGB(255, 220, 80)
+        else
+            color = Color3.fromRGB(255, 90, 90)
+        end
+    else
+        line2 = "HP: no readable value found"
+        color = Color3.fromRGB(255, 180, 120)
+    end
+
+    self.hudLabel.Text = "VEHICLE: " .. getDisplayName(vehicle) .. "\n" .. line2 .. "\nGOD: " .. (self.enabled and "ON" or "OFF")
+    self.hudLabel.Size = UDim2.new(0, 280, 0, 78)
+    self.hudLabel.TextColor3 = color
+end
+
 -- Update function called every frame from the main heartbeat loop
 function VehicleHealth:update(localPlayer)
+    pcall(function() self:updateHUD(localPlayer) end)
+
     if not self.enabled then
         return
     end
