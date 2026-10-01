@@ -67,10 +67,9 @@ local TargetSizing = loadModule("silent")
 local Markers = loadModule("walls")
 local Lighting = loadModule("fullbright")
 local Weapons = loadModule("norecoil")
-local VehicleHealth = loadModule("vehicle_health")
 local GUI = loadModule("gui")
 
-if not (Services and Config and NPCManager and TargetSizing and Markers and Lighting and Weapons and VehicleHealth and GUI) then
+if not (Services and Config and NPCManager and TargetSizing and Markers and Lighting and Weapons and GUI) then
     error("Failed to load one or more modules. Please verify the remote module files.")
 end
 
@@ -162,24 +161,6 @@ local callbacks = {
         saveConfig()
     end,
 
-    onVehicleGodToggle = function(enabled)
-        Config.vehicleGodEnabled = enabled
-        VehicleHealth.enabled = enabled
-        if not enabled then
-            VehicleHealth:cleanup()
-        end
-        saveConfig()
-    end,
-
-    onVehicleSelect = function(vehicle)
-        VehicleHealth:selectVehicle(vehicle)
-        GUI:updateVehicleStatus(VehicleHealth:getStatus())
-    end,
-
-    getAvailableVehicles = function()
-        return VehicleHealth:getAvailableVehicles()
-    end,
-
     onVisibleRChange = function(value)
         Config:updateVisibleColor(value, nil, nil)
         saveConfig()
@@ -230,7 +211,6 @@ local callbacks = {
         Markers.disable()
         TargetSizing:cleanup(NPCManager)
         NPCManager:cleanup()
-        VehicleHealth:cleanup()
         Lighting:restoreOriginal(Services.Lighting)
         Config.guiVisible = false
         saveConfig()
@@ -238,11 +218,6 @@ local callbacks = {
         GUI:destroy()
     end
 }
-
--- Apply saved vehicle god state
-if Config.vehicleGodEnabled then
-    VehicleHealth.enabled = true
-end
 
 GUI:init(Services, Config, callbacks)
 syncMouseState()
@@ -269,8 +244,6 @@ table.insert(runtimeConnections, Services.RunService.Heartbeat:Connect(function(
         syncMouseState()
     end
     Lighting:update(Services.Lighting, Config)
-    VehicleHealth:update(Services.localPlayer)
-    GUI:updateVehicleStatus(VehicleHealth:getStatus())
 
     npcAccumulator = npcAccumulator + dt
     if npcAccumulator >= Config.NPC_REFRESH_INTERVAL then
