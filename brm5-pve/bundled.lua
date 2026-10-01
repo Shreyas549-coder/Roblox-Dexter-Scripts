@@ -1348,12 +1348,17 @@ local callbacks = {
             TargetSizing:cleanup(NPCManager)
         end
         NPCManager:refreshTrackedNPCs(Services.Workspace, Markers, TargetSizing, Config)
+        TargetSizing:updateAllTargets(NPCManager, Config)
         saveConfig()
     end,
 
     onShowTargetBoxToggle = function(enabled)
         Config.showTargetBox = enabled
+        if not enabled then
+            TargetSizing:cleanup(NPCManager)
+        end
         NPCManager:refreshTrackedNPCs(Services.Workspace, Markers, TargetSizing, Config)
+        TargetSizing:updateAllTargets(NPCManager, Config)
         saveConfig()
     end,
 
