@@ -1,22 +1,21 @@
--- Target Sizing / Silent Aim Module
--- Real silent aim: hooks Events.RemoteEvent:FireServer and rewrites the
--- direction Vector3 to point at the closest visible NPC head.
--- Keeps the old TargetSizing API so main.lua / gui.lua don't change.
+-- Target Sizing / Silent Aim Module (Xeno-compatible)
+-- Xeno has no hookmetamethod, so we hook the RemoteEvent's FireServer
+-- function directly with hookfunction.
 
 local SilentAim = {}
 
 SilentAim.enabled = false
-SilentAim.originalSizes = {}   -- kept for API compat
+SilentAim.originalSizes = {}
 SilentAim.currentTarget = nil
 SilentAim.fireRemote = nil
+SilentAim.originalFire = nil
 SilentAim.hookInstalled = false
 SilentAim.vectorArgIndex = nil
 SilentAim.debugUntil = 0
-SilentAim.debugMode = true     -- set false later to silence
 
 local RS = game:GetService("ReplicatedStorage")
 
-local function findFireRemote()
+local function getFireRemote()
     local events = RS:FindFirstChild("Events")
     if not events then return nil end
     local re = events:FindFirstChild("RemoteEvent")
@@ -24,51 +23,43 @@ local function findFireRemote()
     return events:FindFirstChild("UnreliableRemoteEvent")
 end
 
-local function logCall(remote, args)
+local function describeArgs(args)
     local parts = {}
-    for i = 1, math.min(#args, 8) do
+    for i = 1, math.min(#args, 10) do
         local a = args[i]
         local t = typeof(a)
         if t == "Vector3" then
-            parts[#parts+1] = ("[%d]Vec3(%s)"):format(i, tostring(a))
+            parts[#parts+1] = ("[%d]Vec3%s"):format(i, tostring(a))
         elseif t == "number" or t == "string" or t == "boolean" then
             parts[#parts+1] = ("[%d]%s"):format(i, tostring(a))
+        elseif t == "table" then
+            parts[#parts+1] = ("[%d]table"):format(i)
         else
             parts[#parts+1] = ("[%d]%s"):format(i, t)
         end
     end
-    print(("[silent] %s | %s"):format(remote:GetFullName(), table.concat(parts, " ")))
+    return table.concat(parts, " ")
 end
 
-local function rewriteArgs(args)
+local function rewriteArgs(args, camera)
     if not SilentAim.currentTarget or not SilentAim.currentTarget.Parent then
         return args
     end
-    local camera = workspace.CurrentCamera
-    if not camera then return args end
-
     local dir = (SilentAim.currentTarget.Position - camera.CFrame.Position).Unit
 
-    -- use cached index if valid
     local idx = SilentAim.vectorArgIndex
     if idx and idx <= #args and typeof(args[idx]) == "Vector3" then
         args[idx] = dir
         return args
     end
 
-    -- auto-detect: pick the first Vector3 that looks like a direction
-    -- (unit-length or small magnitude). This picks bullet direction, not
-    -- positions, because positions are world-scale (hundreds of studs).
+    -- first-pass: pick the first Vector3 with a small magnitude (a direction)
     for i = 1, #args do
-        if typeof(args[i]) == "Vector3" then
-            local v = args[i]
-            local mag = v.Magnitude
-            if mag < 1.5 or (mag > 0.5 and mag < 5 and math.abs(mag - 1) < 0.05) then
-                SilentAim.vectorArgIndex = i
-                print(("[silent] locked Vector3 arg index = %d"):format(i))
-                args[i] = dir
-                return args
-            end
+        if typeof(args[i]) == "Vector3" and args[i].Magnitude < 5 then
+            SilentAim.vectorArgIndex = i
+            print(("[silent] locked Vector3 arg index = %d"):format(i))
+            args[i] = dir
+            return args
         end
     end
     return args
@@ -76,39 +67,54 @@ end
 
 function SilentAim:install()
     if self.hookInstalled then return true end
-    if type(hookmetamethod) ~= "function" then
-        warn("[silent] hookmetamethod not available in this executor")
+    if type(hookfunction) ~= "function" then
+        warn("[silent] hookfunction not available")
         return false
     end
-    self.fireRemote = findFireRemote()
-    if not self.fireRemote then
-        warn("[silent] could not find ReplicatedStorage.Events.RemoteEvent")
+    local remote = getFireRemote()
+    if not remote then
+        warn("[silent] no ReplicatedStorage.Events.RemoteEvent found")
+        return false
+    end
+    self.fireRemote = remote
+
+    -- Attempt 1: hook the FireServer function directly.
+    local ok, fireFn = pcall(function() return remote.FireServer end)
+    if not ok or type(fireFn) ~= "function" then
+        warn("[silent] remote.FireServer is not a function value; falling back to getconnections path")
         return false
     end
 
-    local remote = self.fireRemote
-    local oldNamecall = hookmetamethod(game, "__namecall", function(self2, ...)
-        if self2 == remote then
-            local method = getnamecallmethod and getnamecallmethod() or ""
-            if method == "FireServer" then
-                local args = {...}
-                if SilentAim.debugMode and os.clock() < SilentAim.debugUntil then
-                    logCall(remote, args)
-                end
-                if SilentAim.enabled and SilentAim.currentTarget then
-                    args = rewriteArgs(args)
-                    return oldNamecall(self2, table.unpack(args))
+    self.originalFire = fireFn
+    local ourReplacement = function(selfObj, ...)
+        local args = {...}
+        if selfObj == remote then
+            if os.clock() < SilentAim.debugUntil then
+                print(("[silent][out] %s"):format(describeArgs(args)))
+            end
+            if SilentAim.enabled and SilentAim.currentTarget then
+                local camera = workspace.CurrentCamera
+                if camera then
+                    args = rewriteArgs(args, camera)
                 end
             end
+            return SilentAim.originalFire(selfObj, table.unpack(args))
         end
-        return oldNamecall(self2, ...)
-    end)
+        return SilentAim.originalFire(selfObj, ...)
+    end
+
+    local okHook = pcall(hookfunction, fireFn, ourReplacement)
+    if not okHook then
+        warn("[silent] hookfunction on FireServer failed")
+        return false
+    end
+
     self.hookInstalled = true
-    print("[silent] hooked " .. remote:GetFullName())
+    print("[silent] hooked " .. remote:GetFullName() .. ".FireServer")
     return true
 end
 
-function SilentAim:pickTarget(npcManager, config)
+function SilentAim:pickTarget(npcManager)
     local camera = workspace.CurrentCamera
     if not camera then return nil end
     local screenCenter = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
@@ -131,7 +137,6 @@ function SilentAim:pickTarget(npcManager, config)
 end
 
 function SilentAim:updateAllTargets(npcManager, config)
-    -- main.lua calls this every 0.25s. Map config.sizingEnabled -> enabled.
     self.enabled = config.sizingEnabled and true or false
 
     if not self.enabled then
@@ -141,19 +146,17 @@ function SilentAim:updateAllTargets(npcManager, config)
 
     if not self.hookInstalled then
         self:install()
-        if self.debugMode then
+        if self.hookInstalled then
             self.debugUntil = os.clock() + 8
-            print("[silent] debug window open for 8s — fire a few rounds now")
+            print("[silent] debug window open for 8s — fire a few rounds and read the console")
         end
     end
 
-    self.currentTarget = self:pickTarget(npcManager, config)
+    self.currentTarget = self:pickTarget(npcManager)
 end
 
--- API compat — main.lua still calls these on toggle off
-function SilentAim:cleanup(npcManager)
-    self.currentTarget = nil
-end
+-- API compat
+function SilentAim:cleanup(npcManager) self.currentTarget = nil end
 function SilentAim:applyTargetSizing() end
 function SilentAim:restoreOriginalSize() end
 
