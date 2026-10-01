@@ -497,7 +497,8 @@ end
 
 -- Updates target bounds for all NPCs based on config
 function TargetSizing:updateAllTargets(npcManager, config)
-    if not config.sizingEnabled then
+    local shouldApply = config and (config.sizingEnabled or config.showTargetBox)
+    if not shouldApply then
         if next(self.originalSizes) then
             self:cleanup(npcManager)
         end
