@@ -7,53 +7,41 @@ if typeof(clear) == "function" then
 end
 
 local MAIN_VERSION = "cache-bust-2026-03-18-01"
-local GITHUB_BASE = "https://raw.githubusercontent.com/Shreyas549-coder/Roblox-Dexter-Scripts/main/brm5-pve/modules/"
+local GITHUB_BASE = "https://raw.githubusercontent.com/HiIxX0Dexter0XxIiH/Roblox-Dexter-Scripts/main/brm5-pve/modules/"
 local CACHE_BUSTER = MAIN_VERSION .. "-" .. tostring(os.time())
 
 local function loadModule(moduleName)
-    local content = nil
+    local url = GITHUB_BASE .. moduleName .. ".lua?v=" .. CACHE_BUSTER
 
-    -- Check local file in executor workspace (for local testing/offline use)
-    if type(isfile) == "function" and type(readfile) == "function" then
-        local localPaths = {
-            "brm5-pve/modules/" .. moduleName .. ".lua",
-            "modules/" .. moduleName .. ".lua",
-            moduleName .. ".lua"
-        }
-        for _, path in ipairs(localPaths) do
-            if isfile(path) then
-                local okRead, readContent = pcall(readfile, path)
-                if okRead and type(readContent) == "string" and readContent ~= "" then
-                    content = readContent
-                    break
-                end
-            end
-        end
+    local okResponse, response = pcall(function()
+        return game:HttpGet(url)
+    end)
+    if not okResponse then
+        warn("Failed to download module: " .. moduleName)
+        warn("URL: " .. url)
+        warn("HttpGet error: " .. tostring(response))
+        return nil
     end
 
-    -- Download from GitHub if not found locally
-    if not content then
-        local url = GITHUB_BASE .. moduleName .. ".lua?v=" .. CACHE_BUSTER
-        local okResponse, response = pcall(function()
-            return game:HttpGet(url)
-        end)
-        if okResponse and type(response) == "string" and response ~= "" then
-            content = response
-        else
-            warn("Failed to download module: " .. moduleName .. " (" .. tostring(response) .. ")")
-            return nil
-        end
+    if type(response) ~= "string" or response == "" then
+        warn("Module download returned empty content: " .. moduleName)
+        warn("URL: " .. url)
+        return nil
     end
 
-    local chunk, compileError = loadstring(content)
+    local chunk, compileError = loadstring(response)
     if not chunk then
-        warn("Failed to compile module: " .. moduleName .. ": " .. tostring(compileError))
+        warn("Failed to compile module: " .. moduleName)
+        warn("URL: " .. url)
+        warn("Compile error: " .. tostring(compileError))
         return nil
     end
 
     local okRun, result = pcall(chunk)
     if not okRun then
-        warn("Failed to execute module: " .. moduleName .. ": " .. tostring(result))
+        warn("Failed to execute module: " .. moduleName)
+        warn("URL: " .. url)
+        warn("Runtime error: " .. tostring(result))
         return nil
     end
 
@@ -121,17 +109,12 @@ local callbacks = {
             TargetSizing:cleanup(NPCManager)
         end
         NPCManager:refreshTrackedNPCs(Services.Workspace, Markers, TargetSizing, Config)
-        TargetSizing:updateAllTargets(NPCManager, Config)
         saveConfig()
     end,
 
     onShowTargetBoxToggle = function(enabled)
         Config.showTargetBox = enabled
-        if not enabled then
-            TargetSizing:cleanup(NPCManager)
-        end
         NPCManager:refreshTrackedNPCs(Services.Workspace, Markers, TargetSizing, Config)
-        TargetSizing:updateAllTargets(NPCManager, Config)
         saveConfig()
     end,
 
@@ -193,21 +176,6 @@ local callbacks = {
 
     onHiddenBChange = function(value)
         Config:updateHiddenColor(nil, nil, value)
-        saveConfig()
-    end,
-
-    onHitboxRChange = function(value)
-        Config:updateHitboxColor(value, nil, nil)
-        saveConfig()
-    end,
-
-    onHitboxGChange = function(value)
-        Config:updateHitboxColor(nil, value, nil)
-        saveConfig()
-    end,
-
-    onHitboxBChange = function(value)
-        Config:updateHitboxColor(nil, nil, value)
         saveConfig()
     end,
 
