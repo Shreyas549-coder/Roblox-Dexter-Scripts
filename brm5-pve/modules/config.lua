@@ -31,10 +31,8 @@ Config.patchOptions = {
 -- COLORS (RGB: 0 to 255)
 Config.visibleR, Config.visibleG, Config.visibleB = 0, 255, 0    -- Green for visible targets
 Config.hiddenR, Config.hiddenG, Config.hiddenB = 255, 0, 0       -- Red for occluded targets
-Config.hitboxR, Config.hitboxG, Config.hitboxB = 255, 255, 0     -- Yellow hitbox outline for target sizing
 Config.visibleColor = Color3.fromRGB(Config.visibleR, Config.visibleG, Config.visibleB)
 Config.hiddenColor = Color3.fromRGB(Config.hiddenR, Config.hiddenG, Config.hiddenB)
-Config.hitboxColor = Color3.fromRGB(Config.hitboxR, Config.hitboxG, Config.hitboxB)
 
 -- Update color function
 function Config:updateVisibleColor(r, g, b)
@@ -49,13 +47,6 @@ function Config:updateHiddenColor(r, g, b)
     if g then self.hiddenG = g end
     if b then self.hiddenB = b end
     self.hiddenColor = Color3.fromRGB(self.hiddenR, self.hiddenG, self.hiddenB)
-end
-
-function Config:updateHitboxColor(r, g, b)
-    if r then self.hitboxR = r end
-    if g then self.hitboxG = g end
-    if b then self.hitboxB = b end
-    self.hitboxColor = Color3.fromRGB(self.hitboxR, self.hitboxG, self.hitboxB)
 end
 
 function Config:updateNPCDetectionRadius(value)
@@ -86,10 +77,7 @@ function Config:serialize()
         visibleB = self.visibleB,
         hiddenR = self.hiddenR,
         hiddenG = self.hiddenG,
-        hiddenB = self.hiddenB,
-        hitboxR = self.hitboxR,
-        hitboxG = self.hitboxG,
-        hitboxB = self.hitboxB
+        hiddenB = self.hiddenB
     }
 end
 
@@ -109,7 +97,6 @@ function Config:applySavedData(data)
 
     self:updateVisibleColor(data.visibleR, data.visibleG, data.visibleB)
     self:updateHiddenColor(data.hiddenR, data.hiddenG, data.hiddenB)
-    self:updateHitboxColor(data.hitboxR, data.hitboxG, data.hitboxB)
     self:updateNPCDetectionRadius(data.npcDetectionRadius)
 end
 
