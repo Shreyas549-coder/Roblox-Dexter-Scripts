@@ -63,8 +63,10 @@ Config.patchOptions = {
 -- COLORS (RGB: 0 to 255)
 Config.visibleR, Config.visibleG, Config.visibleB = 0, 255, 0    -- Green for visible targets
 Config.hiddenR, Config.hiddenG, Config.hiddenB = 255, 0, 0       -- Red for occluded targets
+Config.hitboxR, Config.hitboxG, Config.hitboxB = 255, 255, 0     -- Yellow hitbox outline for target sizing
 Config.visibleColor = Color3.fromRGB(Config.visibleR, Config.visibleG, Config.visibleB)
 Config.hiddenColor = Color3.fromRGB(Config.hiddenR, Config.hiddenG, Config.hiddenB)
+Config.hitboxColor = Color3.fromRGB(Config.hitboxR, Config.hitboxG, Config.hitboxB)
 
 -- Update color function
 function Config:updateVisibleColor(r, g, b)
@@ -79,6 +81,13 @@ function Config:updateHiddenColor(r, g, b)
     if g then self.hiddenG = g end
     if b then self.hiddenB = b end
     self.hiddenColor = Color3.fromRGB(self.hiddenR, self.hiddenG, self.hiddenB)
+end
+
+function Config:updateHitboxColor(r, g, b)
+    if r then self.hitboxR = r end
+    if g then self.hitboxG = g end
+    if b then self.hitboxB = b end
+    self.hitboxColor = Color3.fromRGB(self.hitboxR, self.hitboxG, self.hitboxB)
 end
 
 function Config:updateNPCDetectionRadius(value)
@@ -109,7 +118,10 @@ function Config:serialize()
         visibleB = self.visibleB,
         hiddenR = self.hiddenR,
         hiddenG = self.hiddenG,
-        hiddenB = self.hiddenB
+        hiddenB = self.hiddenB,
+        hitboxR = self.hitboxR,
+        hitboxG = self.hitboxG,
+        hitboxB = self.hitboxB
     }
 end
 
@@ -129,6 +141,7 @@ function Config:applySavedData(data)
 
     self:updateVisibleColor(data.visibleR, data.visibleG, data.visibleB)
     self:updateHiddenColor(data.hiddenR, data.hiddenG, data.hiddenB)
+    self:updateHitboxColor(data.hitboxR, data.hitboxG, data.hitboxB)
     self:updateNPCDetectionRadius(data.npcDetectionRadius)
 end
 
@@ -425,20 +438,38 @@ __MODULES__["silent"] = (function()
 local TargetSizing = {}
 
 TargetSizing.originalSizes = {} -- Storage for original sizes to restore them later
+TargetSizing.originalColors = {} -- Storage for original root colors to restore them later
 
 -- Adjusts the NPC target bounds
 function TargetSizing:applyTargetSizing(model, root, config)
     if not self.originalSizes[model] then 
         self.originalSizes[model] = root.Size 
     end
+    if not self.originalColors[model] then
+        self.originalColors[model] = root.Color3
+    end
     
     if root.Size ~= config.TARGET_BOX_SIZE then
         root.Size = config.TARGET_BOX_SIZE
     end
-    local targetTransparency = config.showTargetBox and 0.85 or 1
-    if root.Transparency ~= targetTransparency then
-        root.Transparency = targetTransparency -- If showTargetBox is true, you'll see a faint target box
+
+    if config.showTargetBox then
+        local hitboxColor = (config.hitboxColor and config.hitboxColor) or Color3.fromRGB(255, 255, 0)
+        if root.Color3 ~= hitboxColor then
+            root.Color3 = hitboxColor
+        end
+        if root.Transparency ~= 0.85 then
+            root.Transparency = 0.85 -- If showTargetBox is true, you'll see a faint target box
+        end
+    else
+        if root.Color3 ~= self.originalColors[model] then
+            root.Color3 = self.originalColors[model]
+        end
+        if root.Transparency ~= 1 then
+            root.Transparency = 1
+        end
     end
+
     if not root.CanCollide then
         root.CanCollide = true
     end
@@ -454,10 +485,14 @@ function TargetSizing:restoreOriginalSize(model, npcManager)
     end
     if root and self.originalSizes[model] then
         root.Size = self.originalSizes[model]
+        if self.originalColors[model] then
+            root.Color3 = self.originalColors[model]
+        end
         root.Transparency = 1
         root.CanCollide = false
     end
     self.originalSizes[model] = nil
+    self.originalColors[model] = nil
 end
 
 -- Updates target bounds for all NPCs based on config
@@ -1111,6 +1146,16 @@ function GUI:init(services, config, callbacks)
     createSlider(tabColors, "G", config.hiddenG, 255, callbacks.onHiddenGChange, layoutIndex, services)
     layoutIndex = layoutIndex + 1
     createSlider(tabColors, "B", config.hiddenB, 255, callbacks.onHiddenBChange, layoutIndex, services)
+    layoutIndex = layoutIndex + 1
+
+    createLabel(tabColors, "-- HITBOX COLOR --", Color3.new(1, 1, 0.5), layoutIndex)
+    layoutIndex = layoutIndex + 1
+
+    createSlider(tabColors, "R", config.hitboxR, 255, callbacks.onHitboxRChange, layoutIndex, services)
+    layoutIndex = layoutIndex + 1
+    createSlider(tabColors, "G", config.hitboxG, 255, callbacks.onHitboxGChange, layoutIndex, services)
+    layoutIndex = layoutIndex + 1
+    createSlider(tabColors, "B", config.hitboxB, 255, callbacks.onHitboxBChange, layoutIndex, services)
 
     -- CREDITS TAB
     local function addCredit(text, font, size)
@@ -1369,6 +1414,21 @@ local callbacks = {
 
     onHiddenBChange = function(value)
         Config:updateHiddenColor(nil, nil, value)
+        saveConfig()
+    end,
+
+    onHitboxRChange = function(value)
+        Config:updateHitboxColor(value, nil, nil)
+        saveConfig()
+    end,
+
+    onHitboxGChange = function(value)
+        Config:updateHitboxColor(nil, value, nil)
+        saveConfig()
+    end,
+
+    onHitboxBChange = function(value)
+        Config:updateHitboxColor(nil, nil, value)
         saveConfig()
     end,
 

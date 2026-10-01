@@ -191,6 +191,21 @@ local callbacks = {
         saveConfig()
     end,
 
+    onHitboxRChange = function(value)
+        Config:updateHitboxColor(value, nil, nil)
+        saveConfig()
+    end,
+
+    onHitboxGChange = function(value)
+        Config:updateHitboxColor(nil, value, nil)
+        saveConfig()
+    end,
+
+    onHitboxBChange = function(value)
+        Config:updateHitboxColor(nil, nil, value)
+        saveConfig()
+    end,
+
     onNPCDetectionRadiusChange = function(value)
         Config:updateNPCDetectionRadius(value)
         NPCManager:refreshTrackedNPCs(Services.Workspace, Markers, TargetSizing, Config)

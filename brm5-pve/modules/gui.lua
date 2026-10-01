@@ -388,6 +388,16 @@ function GUI:init(services, config, callbacks)
     createSlider(tabColors, "G", config.hiddenG, 255, callbacks.onHiddenGChange, layoutIndex, services)
     layoutIndex = layoutIndex + 1
     createSlider(tabColors, "B", config.hiddenB, 255, callbacks.onHiddenBChange, layoutIndex, services)
+    layoutIndex = layoutIndex + 1
+
+    createLabel(tabColors, "-- HITBOX COLOR --", Color3.new(1, 1, 0.5), layoutIndex)
+    layoutIndex = layoutIndex + 1
+
+    createSlider(tabColors, "R", config.hitboxR, 255, callbacks.onHitboxRChange, layoutIndex, services)
+    layoutIndex = layoutIndex + 1
+    createSlider(tabColors, "G", config.hitboxG, 255, callbacks.onHitboxGChange, layoutIndex, services)
+    layoutIndex = layoutIndex + 1
+    createSlider(tabColors, "B", config.hitboxB, 255, callbacks.onHitboxBChange, layoutIndex, services)
 
     -- CREDITS TAB
     local function addCredit(text, font, size)

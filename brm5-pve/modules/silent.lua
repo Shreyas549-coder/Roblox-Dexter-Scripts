@@ -4,20 +4,38 @@
 local TargetSizing = {}
 
 TargetSizing.originalSizes = {} -- Storage for original sizes to restore them later
+TargetSizing.originalColors = {} -- Storage for original root colors to restore them later
 
 -- Adjusts the NPC target bounds
 function TargetSizing:applyTargetSizing(model, root, config)
     if not self.originalSizes[model] then 
         self.originalSizes[model] = root.Size 
     end
+    if not self.originalColors[model] then
+        self.originalColors[model] = root.Color3
+    end
     
     if root.Size ~= config.TARGET_BOX_SIZE then
         root.Size = config.TARGET_BOX_SIZE
     end
-    local targetTransparency = config.showTargetBox and 0.85 or 1
-    if root.Transparency ~= targetTransparency then
-        root.Transparency = targetTransparency -- If showTargetBox is true, you'll see a faint target box
+
+    if config.showTargetBox then
+        local hitboxColor = (config.hitboxColor and config.hitboxColor) or Color3.fromRGB(255, 255, 0)
+        if root.Color3 ~= hitboxColor then
+            root.Color3 = hitboxColor
+        end
+        if root.Transparency ~= 0.85 then
+            root.Transparency = 0.85 -- If showTargetBox is true, you'll see a faint target box
+        end
+    else
+        if root.Color3 ~= self.originalColors[model] then
+            root.Color3 = self.originalColors[model]
+        end
+        if root.Transparency ~= 1 then
+            root.Transparency = 1
+        end
     end
+
     if not root.CanCollide then
         root.CanCollide = true
     end
@@ -33,10 +51,14 @@ function TargetSizing:restoreOriginalSize(model, npcManager)
     end
     if root and self.originalSizes[model] then
         root.Size = self.originalSizes[model]
+        if self.originalColors[model] then
+            root.Color3 = self.originalColors[model]
+        end
         root.Transparency = 1
         root.CanCollide = false
     end
     self.originalSizes[model] = nil
+    self.originalColors[model] = nil
 end
 
 -- Updates target bounds for all NPCs based on config
