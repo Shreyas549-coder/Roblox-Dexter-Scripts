@@ -388,16 +388,6 @@ function GUI:init(services, config, callbacks)
     createSlider(tabColors, "G", config.hiddenG, 255, callbacks.onHiddenGChange, layoutIndex, services)
     layoutIndex = layoutIndex + 1
     createSlider(tabColors, "B", config.hiddenB, 255, callbacks.onHiddenBChange, layoutIndex, services)
-    layoutIndex = layoutIndex + 1
-
-    createLabel(tabColors, "-- HITBOX COLOR --", Color3.new(1, 1, 0.5), layoutIndex)
-    layoutIndex = layoutIndex + 1
-
-    createSlider(tabColors, "R", config.hitboxR, 255, callbacks.onHitboxRChange, layoutIndex, services)
-    layoutIndex = layoutIndex + 1
-    createSlider(tabColors, "G", config.hitboxG, 255, callbacks.onHitboxGChange, layoutIndex, services)
-    layoutIndex = layoutIndex + 1
-    createSlider(tabColors, "B", config.hitboxB, 255, callbacks.onHitboxBChange, layoutIndex, services)
 
     -- CREDITS TAB
     local function addCredit(text, font, size)
@@ -452,8 +442,8 @@ function GUI:init(services, config, callbacks)
     end
 
     addCredit("Credits and Help", "GothamBold", 28)
-    addCredit("Made by: Shreyas549-coder", "GothamBold", 24)
-    addLinkButton("GitHub", "https://github.com/Shreyas549-coder/Roblox-Dexter-Scripts", Color3.fromRGB(45, 95, 160))
+    addCredit("Made by: HiIxX0Dexter0XxIiH", "GothamBold", 24)
+    addLinkButton("GitHub", "https://github.com/HiIxX0Dexter0XxIiH/Roblox-Dexter-Scripts", Color3.fromRGB(45, 95, 160))
     addLinkButton("Reddit", "https://www.reddit.com/r/BRM5Scripts/", Color3.fromRGB(185, 75, 45))
 
     -- UNLOAD BUTTON
@@ -503,4 +493,3 @@ function GUI:destroy()
 end
 
 return GUI
-
