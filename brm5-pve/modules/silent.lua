@@ -12,7 +12,7 @@ function TargetSizing:applyTargetSizing(model, root, config)
         self.originalSizes[model] = root.Size 
     end
     if not self.originalColors[model] then
-        self.originalColors[model] = root.Color3
+        self.originalColors[model] = root.Color
     end
     
     if root.Size ~= config.TARGET_BOX_SIZE then
@@ -21,15 +21,15 @@ function TargetSizing:applyTargetSizing(model, root, config)
 
     if config.showTargetBox then
         local hitboxColor = (config.hitboxColor and config.hitboxColor) or Color3.fromRGB(255, 255, 0)
-        if root.Color3 ~= hitboxColor then
-            root.Color3 = hitboxColor
+        if root.Color ~= hitboxColor then
+            root.Color = hitboxColor
         end
         if root.Transparency ~= 0.85 then
             root.Transparency = 0.85 -- If showTargetBox is true, you'll see a faint target box
         end
     else
-        if root.Color3 ~= self.originalColors[model] then
-            root.Color3 = self.originalColors[model]
+        if root.Color ~= self.originalColors[model] then
+            root.Color = self.originalColors[model]
         end
         if root.Transparency ~= 1 then
             root.Transparency = 1
@@ -52,7 +52,7 @@ function TargetSizing:restoreOriginalSize(model, npcManager)
     if root and self.originalSizes[model] then
         root.Size = self.originalSizes[model]
         if self.originalColors[model] then
-            root.Color3 = self.originalColors[model]
+            root.Color = self.originalColors[model]
         end
         root.Transparency = 1
         root.CanCollide = false
